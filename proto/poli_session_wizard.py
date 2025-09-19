@@ -264,6 +264,32 @@ def send_lines_to_target(config: SessionConfig, target: str, lines: List[str]) -
     args = tmux_socket_args(config.socket)
     block = "\n".join(lines).rstrip("\n")
 
+    # For codex-like TUIs, prefer literal typing with Ctrl-J newlines
+    prefer_literal = ":executer." in target or target.startswith("executer:")
+
+    if prefer_literal:
+        for i, line in enumerate(block.split("\n")):
+            if line:
+                run_tmux_command(
+                    args + ["send-keys", "-t", target, "-l", line],
+                    desc=f"{target}:type",
+                    capture=False,
+                )
+            if i < len(block.split("\n")) - 1:
+                run_tmux_command(
+                    args + ["send-keys", "-t", target, "C-j"],
+                    desc=f"{target}:newline",
+                    capture=False,
+                )
+                time.sleep(0.02)
+        run_tmux_command(
+            args + ["send-keys", "-t", target, "C-m"],
+            desc=f"{target}:send",
+            capture=False,
+        )
+        time.sleep(0.05)
+        return
+
     if block:
         preview = block.replace("\n", " ⏎ ")
         if len(preview) > 60:
@@ -280,20 +306,13 @@ def send_lines_to_target(config: SessionConfig, target: str, lines: List[str]) -
             desc=f"{target}:paste",
             capture=False,
         )
-        time.sleep(0.15)
-
+        time.sleep(0.1)
     run_tmux_command(
         args + ["send-keys", "-t", target, "C-m"],
         desc=f"{target}:enter",
         capture=False,
     )
-    time.sleep(0.15)
-    run_tmux_command(
-        args + ["send-keys", "-t", target, "C-m"],
-        desc=f"{target}:newline",
-        capture=False,
-    )
-    time.sleep(0.15)
+    time.sleep(0.05)
 
 
 def persist_session(config: SessionConfig, debug_tmux: bool, auto_attach: bool, layout: str) -> None:

@@ -202,17 +202,29 @@ def tmux_exists() -> bool:
 
 
 def send_keys(target: str, text: str, with_enter: bool = True) -> None:
-    """Send text to tmux pane, preserving newlines (Architecture line 205-211)"""
-    logger.info(f"Sending to {target}: {text[:100]}{'...' if len(text) > 100 else ''}")
-
-    lines = text.split("\n")
-    for line in lines:
+    """(Legacy) Send text line-by-line with Enter after each line."""
+    logger.info(f"Sending (legacy) to {target}: {text[:100]}{'...' if len(text) > 100 else ''}")
+    for line in text.split("\n"):
         if line:
             sh(TMUX + ["send-keys", "-t", target, "--", line])
-        # Architecture specifies C-m for each line
-    if with_enter:
-        sh(TMUX + ["send-keys", "-t", target, "C-m"])
-        time.sleep(0.05)
+        if with_enter:
+            sh(TMUX + ["send-keys", "-t", target, "C-m"])
+
+
+def send_block(target: str, text: str) -> None:
+    """Type the whole block literally with Ctrl-J between lines, Enter once at the end.
+
+    This matches TUIs (like Codex) that interpret Enter as "send" and Ctrl-J as newline.
+    """
+    logger.info(f"Sending block to {target}: {text[:100]}{'...' if len(text) > 100 else ''}")
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if line:
+            sh(TMUX + ["send-keys", "-t", target, "-l", line])
+        if i < len(lines) - 1:
+            sh(TMUX + ["send-keys", "-t", target, "C-j"])  # newline inside prompt
+        time.sleep(0.01)
+    sh(TMUX + ["send-keys", "-t", target, "C-m"])  # send once at the end
 
 
 def capture_tail(target: str, lines: int = None) -> str:
@@ -280,7 +292,7 @@ Follow the instructions and report progress with STATUS blocks.
 When finished, emit a RESULT block back to PLANNER using the same task id ({planner_msg.id})."""
 
     print("→ PLANNER talimatı EXECUTER'a iletiliyor")
-    send_keys(EXECUTER_PANE, instructions)
+    send_block(EXECUTER_PANE, instructions)
     task_state.status = "executing"
     task_state.expected_from = "EXECUTER"
     task_state.expected_type = "result"
@@ -311,7 +323,7 @@ Lütfen kullanıcıyla birlikte sonucu değerlendir. Yanıt verirken:
 PoliTerm döngüsü, sen yeni bir blok gönderene kadar bekleyecek."""
 
     print("→ EXECUTER sonucu PLANNER'a gönderiliyor")
-    send_keys(PLANNER_PANE, prompt)
+    send_block(PLANNER_PANE, prompt)
     task_state.status = "awaiting_planner"
     task_state.expected_from = "PLANNER"
     task_state.expected_type = "continue"
