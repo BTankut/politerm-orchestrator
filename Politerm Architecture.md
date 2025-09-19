@@ -32,7 +32,7 @@
 |---------------------|       |         →Planner... |
 | [pane 1] EXECUTER   |       +---------------------+
 |   cmd: codex        |
-|   cwd: /ProjB       |
+|   cwd: /ProjA       |
 +---------------------+
 ```
 
@@ -153,7 +153,7 @@ SOCKET="poli"
 SESSION="main"
 
 PLANNER_CWD="${PLANNER_CWD:-$HOME/Workspace/ProjA}"
-EXECUTER_CWD="${EXECUTER_CWD:-$HOME/Workspace/ProjB}"
+EXECUTER_CWD="${EXECUTER_CWD:-$HOME/Workspace/ProjA}"
 PLANNER_CMD="${PLANNER_CMD:-claude}"
 EXECUTER_CMD="${EXECUTER_CMD:-codex}"
 
@@ -288,7 +288,7 @@ Now produce a concise final report for the user (no new POLI blocks).
     return True
 
 if __name__ == "__main__":
-    ok = route_once("Analyze README in /ProjA, then prepare and run a matching script in /ProjB.")
+    ok = route_once("Analyze README in /ProjA, then prepare and run a matching script in /ProjA.")
     print("DONE:", ok)
 ```
 
@@ -322,7 +322,7 @@ export PLANNER_CMD="claude"
 export PLANNER_CWD="$HOME/Workspace/ProjA"
 
 export EXECUTER_CMD="codex"
-export EXECUTER_CWD="$HOME/Workspace/ProjB"
+export EXECUTER_CWD="$HOME/Workspace/ProjA"
 
 export POLI_TMUX_SOCKET="poli"
 export POLI_TMUX_SESSION="main"
