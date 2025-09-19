@@ -13,8 +13,21 @@ EXECUTER_CMD="${EXECUTER_CMD:-codex}"
 # Paths to primer files
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="$SCRIPT_DIR/../config"
-PLANNER_PRIMER_FILE="$CONFIG_DIR/planner_primer.txt"
-EXECUTER_PRIMER_FILE="$CONFIG_DIR/executer_primer.txt"
+if [ -f "$CONFIG_DIR/planner_primer_v3.txt" ]; then
+    PLANNER_PRIMER_FILE="$CONFIG_DIR/planner_primer_v3.txt"
+elif [ -f "$CONFIG_DIR/planner_primer_v2.txt" ]; then
+    PLANNER_PRIMER_FILE="$CONFIG_DIR/planner_primer_v2.txt"
+else
+    PLANNER_PRIMER_FILE="$CONFIG_DIR/planner_primer.txt"
+fi
+
+if [ -f "$CONFIG_DIR/executer_primer_v3.txt" ]; then
+    EXECUTER_PRIMER_FILE="$CONFIG_DIR/executer_primer_v3.txt"
+elif [ -f "$CONFIG_DIR/executer_primer_v2.txt" ]; then
+    EXECUTER_PRIMER_FILE="$CONFIG_DIR/executer_primer_v2.txt"
+else
+    EXECUTER_PRIMER_FILE="$CONFIG_DIR/executer_primer.txt"
+fi
 
 # Colors for output
 RED='\033[0;31m'

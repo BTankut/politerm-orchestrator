@@ -62,6 +62,9 @@ sudo apt-get install tmux
 cd /path/to/your/project
 
 # Start PoliTerm with that directory
+python3 proto/poli_session_wizard.py
+
+# Legacy shell helper if you prefer bash
 ./start_project.sh
 ```
 
@@ -140,18 +143,21 @@ politerm-orchestrator/
 ├── proto/                      # Orchestrator implementations
 │   ├── poli_orchestrator.py    # v1: Single round
 │   ├── poli_orchestrator_v2.py # v2: Continuous dialogue
-│   └── poli_orchestrator_v3.py # v3: Full features (recommended)
+│   ├── poli_orchestrator_v3.py # v3: Full features (recommended)
+│   └── poli_session_wizard.py  # Interactive startup wizard
 ├── scripts/                     # tmux management
 │   ├── bootstrap_tmux_v2.sh    # Start tmux session
 │   └── kill_tmux.sh            # Clean up
 ├── config/                      # Configuration files
 │   ├── shared_workspace.env    # Environment settings
-│   ├── planner_primer_v2.txt   # Planner instructions
-│   └── executer_primer_v2.txt  # Executer instructions
+│   ├── planner_primer_v3.txt   # Planner interactive primer
+│   ├── executer_primer_v3.txt  # Executer interactive primer
+│   ├── planner_primer_v2.txt   # Legacy primer
+│   └── executer_primer_v2.txt  # Legacy primer
 ├── tests/                       # Testing utilities
 │   ├── mock_planner.py         # Mock planner for testing
 │   └── mock_executer.py        # Mock executer for testing
-└── start_project.sh            # Easy startup script
+└── start_project.sh            # Legacy startup helper
 ```
 
 ## 🔄 How It Works

@@ -87,6 +87,17 @@ class TaskState:
 # Global state table for task tracking
 STATE_TABLE: Dict[str, TaskState] = {}
 
+
+def ensure_task_state(task_id: str) -> TaskState:
+    """Fetch or create a task state entry"""
+    if task_id not in STATE_TABLE:
+        STATE_TABLE[task_id] = TaskState(
+            task_id=task_id,
+            expected_from="PLANNER",
+            expected_type="plan"
+        )
+    return STATE_TABLE[task_id]
+
 # Interrupt handler flag
 INTERRUPTED = False
 
@@ -194,12 +205,98 @@ def find_blocks(buffer: str) -> List[PoliMessage]:
     return blocks
 
 
+
+
+
+def forward_instruction_to_executer(task_state: TaskState, planner_msg: PoliMessage, seen_messages: Set[Tuple[str, str]]) -> Optional[PoliMessage]:
+    """Send planner instructions to EXECUTER and wait for a result"""
+    logger.info(f"Forwarding {planner_msg.type} from PLANNER to EXECUTER (task={planner_msg.id})")
+
+    instructions = f"""PLANNER sent a {planner_msg.type} block. Execute these steps carefully.
+
+[[POLI:MSG {json.dumps(planner_msg.raw_meta)}]]
+{planner_msg.body}
+[[/POLI:MSG]]
+
+Follow the instructions and report progress with STATUS blocks.
+When finished, emit a RESULT block back to PLANNER using the same task id ({planner_msg.id})."""
+
+    print("→ PLANNER talimatı EXECUTER'a iletiliyor")
+    send_keys(EXECUTER_PANE, instructions)
+    task_state.status = "executing"
+    task_state.expected_from = "EXECUTER"
+    task_state.expected_type = "result"
+
+    result_msg = wait_for_executor_result(task_state, seen_messages)
+
+    if not result_msg:
+        logger.warning("EXECUTER timeout for task %s", task_state.task_id)
+    else:
+        logger.info("EXECUTER responded with %s for task %s", result_msg.type, task_state.task_id)
+
+    return result_msg
+
+
+def send_result_to_planner(task_state: TaskState, result_msg: PoliMessage) -> None:
+    """Relay EXECUTER's output back to PLANNER for supervision"""
+    prompt = f"""EXECUTER tamamladı ve şunu raporladı:
+
+[[POLI:MSG {json.dumps(result_msg.raw_meta)}]]
+{result_msg.body}
+[[/POLI:MSG]]
+
+Lütfen kullanıcıyla birlikte sonucu değerlendir. Yanıt verirken:
+- type="continue" ile bir sonraki adımları ver
+- type="revision" ile sorunları düzelt
+- type="complete" ile görevi sonlandır
+
+PoliTerm döngüsü, sen yeni bir blok gönderene kadar bekleyecek."""
+
+    print("→ EXECUTER sonucu PLANNER'a gönderiliyor")
+    send_keys(PLANNER_PANE, prompt)
+    task_state.status = "awaiting_planner"
+    task_state.expected_from = "PLANNER"
+    task_state.expected_type = "continue"
+
+def wait_for_executor_result(task_state: TaskState, seen_messages: Set[Tuple[str, str]], timeout: float = EXEC_TIMEOUT) -> Optional[PoliMessage]:
+    """Wait for EXECUTER to emit a result or error block"""
+    exec_start = time.time()
+    result_msg: Optional[PoliMessage] = None
+
+    while time.time() - exec_start < timeout and not INTERRUPTED:
+        buffer = capture_tail(EXECUTER_PANE)
+        blocks = find_blocks(buffer)
+
+        for msg in blocks:
+            key = (msg.id, msg.type)
+            if key in seen_messages:
+                continue
+
+            seen_messages.add(key)
+            task_state.messages.append(msg)
+
+            if msg.type == "status":
+                print(f"  Status: {msg.body[:80]}...")
+                logger.info(f"Status from EXECUTER: {msg.body}")
+            elif msg.type in ["result", "error"]:
+                result_msg = msg
+                break
+
+        if result_msg:
+            break
+
+        time.sleep(POLL_INTERVAL)
+
+    return result_msg
+
+
 def wait_for_new_block(
     target: str,
-    seen_ids: Set[str],
+    seen_messages: Set[Tuple[str, str]],
     timeout: float = 120.0,
     expected_types: Optional[List[str]] = None,
-    task_id: Optional[str] = None
+    task_id: Optional[str] = None,
+    enable_nudge: bool = True
 ) -> Optional[PoliMessage]:
     """Wait for a new message block from target pane (Architecture line 230-239)"""
     logger.info(f"Waiting for new block from {target} (timeout={timeout}s, types={expected_types})")
@@ -213,7 +310,7 @@ def wait_for_new_block(
         blocks = find_blocks(buffer)
 
         for msg in blocks:
-            if msg.id and msg.id not in seen_ids:
+            if msg.id and (msg.id, msg.type) not in seen_messages:
                 if expected_types and msg.type not in expected_types:
                     logger.debug(f"Skipping block with type {msg.type} (expected {expected_types})")
                     continue
@@ -222,11 +319,12 @@ def wait_for_new_block(
                 if task_id and task_id in STATE_TABLE:
                     STATE_TABLE[task_id].messages.append(msg)
 
+                seen_messages.add((msg.id, msg.type))
                 logger.info(f"Found new block: {msg.id} (type={msg.type})")
                 return msg
 
         # Section 9: Send nudge if timeout approaching
-        if time.time() - last_nudge_time > nudge_interval:
+        if enable_nudge and time.time() - last_nudge_time > nudge_interval:
             logger.info(f"Sending nudge to {target}")
             send_keys(
                 target,
@@ -267,7 +365,7 @@ def route_continuous(user_prompt: str, task_id: Optional[str] = None, max_rounds
     print(f"{'='*60}\n")
 
     # Track seen message IDs
-    seen_ids: Set[str] = set()
+    seen_messages: Set[Tuple[str, str]] = set()
     round_count = 0
     task_complete = False
 
@@ -303,7 +401,7 @@ When the task is fully complete, emit type="complete" to signal completion."""
 
         planner_msg = wait_for_new_block(
             PLANNER_PANE,
-            seen_ids,
+            seen_messages,
             timeout=PLAN_TIMEOUT,
             expected_types=["plan", "continue", "revision", "complete"],
             task_id=task_id
@@ -314,7 +412,7 @@ When the task is fully complete, emit type="complete" to signal completion."""
             STATE_TABLE[task_id].status = "timeout"
             break
 
-        seen_ids.add(planner_msg.id)
+        seen_messages.add((planner_msg.id, planner_msg.type))
 
         # Update state expectations
         STATE_TABLE[task_id].expected_from = "EXECUTER"
@@ -360,31 +458,7 @@ If you encounter issues, report them in the RESULT block."""
 
         # Wait for EXECUTER's response
         print(f"⏳ Waiting for EXECUTER to complete...")
-        exec_start = time.time()
-        result_msg = None
-
-        while time.time() - exec_start < EXEC_TIMEOUT and not INTERRUPTED:
-            buffer = capture_tail(EXECUTER_PANE)
-            blocks = find_blocks(buffer)
-
-            for msg in blocks:
-                if msg.id not in seen_ids:
-                    seen_ids.add(msg.id)
-
-                    # Add to state table
-                    STATE_TABLE[task_id].messages.append(msg)
-
-                    if msg.type == "status":
-                        print(f"  📊 Status: {msg.body[:80]}...")
-                        logger.info(f"Status from EXECUTER: {msg.body}")
-                    elif msg.type == "result":
-                        result_msg = msg
-                        break
-
-            if result_msg:
-                break
-
-            time.sleep(POLL_INTERVAL)
+        result_msg = wait_for_executor_result(STATE_TABLE[task_id], seen_messages)
 
         if not result_msg:
             print("❌ EXECUTER timeout - no result")
@@ -454,6 +528,59 @@ Remember: The original user request was: {user_prompt}"""
 
     return task_complete
 
+
+
+
+def monitor_planner(max_rounds: int = 50) -> None:
+    """Passively monitor PLANNER and bridge instructions to EXECUTER"""
+    print("\n" + "=" * 60)
+    print("PoliTerm Orchestrator V3 - Monitor Mode")
+    print("=" * 60)
+    print("\nBu modda kullanıcı PLANNER ile doğrudan konuşur. Orchestrator, plan\nblokları göründüğünde EXECUTER ile döngüyü yönetir.")
+    print("=" * 60 + "\n")
+
+    seen_messages: Set[Tuple[str, str]] = set()
+
+    while not INTERRUPTED:
+        planner_msg = wait_for_new_block(
+            PLANNER_PANE,
+            seen_messages,
+            timeout=PLAN_TIMEOUT,
+            expected_types=['plan', 'continue', 'revision', 'complete'],
+            task_id=None,
+            enable_nudge=False
+        )
+
+        if not planner_msg:
+            time.sleep(0.5)
+            continue
+
+        task_id = planner_msg.id or str(uuid.uuid4())
+        state = ensure_task_state(task_id)
+        state.messages.append(planner_msg)
+
+        if planner_msg.type == 'complete':
+            state.status = 'completed'
+            print(f"✅ PLANNER '{task_id}' görevi tamamladı")
+            continue
+
+        if state.round >= max_rounds:
+            print(f"⚠️  {task_id} görevi için maksimum tur ({max_rounds}) aşıldı")
+            state.status = 'max_rounds'
+            continue
+
+        state.round += 1
+        state.status = f'planner_{planner_msg.type}'
+        print(f"--- Görev {task_id} | Tur {state.round} | {planner_msg.type.upper()} ---")
+
+        result_msg = forward_instruction_to_executer(state, planner_msg, seen_messages)
+
+        if not result_msg:
+            print(f"❌ EXECUTER yanıt vermedi (görev {task_id})")
+            state.status = 'exec_timeout'
+            continue
+
+        send_result_to_planner(state, result_msg)
 
 def interactive_mode():
     """Run orchestrator in interactive mode with full Architecture compliance"""
@@ -556,6 +683,11 @@ def main():
         action="store_true",
         help="Show state table"
     )
+    parser.add_argument(
+        "--monitor", "-m",
+        action="store_true",
+        help="Bridge PLANNER→EXECUTER automatically while user drives PLANNER"
+    )
 
     args = parser.parse_args()
 
@@ -577,6 +709,14 @@ def main():
         print("❌ Error: tmux session not found")
         print("\nPlease run: bash scripts/bootstrap_tmux_v2.sh")
         sys.exit(1)
+
+    if args.monitor and args.task:
+        print("❌ Cannot use --task and --monitor together")
+        sys.exit(1)
+
+    if args.monitor:
+        monitor_planner(args.max_rounds)
+        sys.exit(0)
 
     if args.task:
         # Single task mode

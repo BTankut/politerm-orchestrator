@@ -31,14 +31,18 @@ EXECUTER_CMD="${EXECUTER_CMD:-codex}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="$SCRIPT_DIR/../config"
 
-# Use V2 primers if they exist, fallback to V1
-if [ -f "$CONFIG_DIR/planner_primer_v2.txt" ]; then
+# Use newest primers if they exist (v3 > v2 > legacy)
+if [ -f "$CONFIG_DIR/planner_primer_v3.txt" ]; then
+    PLANNER_PRIMER_FILE="$CONFIG_DIR/planner_primer_v3.txt"
+elif [ -f "$CONFIG_DIR/planner_primer_v2.txt" ]; then
     PLANNER_PRIMER_FILE="$CONFIG_DIR/planner_primer_v2.txt"
 else
     PLANNER_PRIMER_FILE="$CONFIG_DIR/planner_primer.txt"
 fi
 
-if [ -f "$CONFIG_DIR/executer_primer_v2.txt" ]; then
+if [ -f "$CONFIG_DIR/executer_primer_v3.txt" ]; then
+    EXECUTER_PRIMER_FILE="$CONFIG_DIR/executer_primer_v3.txt"
+elif [ -f "$CONFIG_DIR/executer_primer_v2.txt" ]; then
     EXECUTER_PRIMER_FILE="$CONFIG_DIR/executer_primer_v2.txt"
 else
     EXECUTER_PRIMER_FILE="$CONFIG_DIR/executer_primer.txt"
