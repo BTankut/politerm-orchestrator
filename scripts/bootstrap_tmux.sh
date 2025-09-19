@@ -64,7 +64,12 @@ if [ -f "$PLANNER_PRIMER_FILE" ]; then
     echo "Injecting PLANNER primer..."
     # Read primer and send line by line
     while IFS= read -r line; do
-        tmux -L "$SOCKET" send-keys -t "$SESSION".0 "$line" C-m
+        if [ -n "$line" ]; then
+            tmux -L "$SOCKET" send-keys -t "$SESSION".0 "$line" C-m
+        else
+            # Send just Enter for empty line
+            tmux -L "$SOCKET" send-keys -t "$SESSION".0 C-m
+        fi
     done < "$PLANNER_PRIMER_FILE"
 else
     echo -e "${YELLOW}Warning: PLANNER primer file not found at $PLANNER_PRIMER_FILE${NC}"
@@ -81,7 +86,12 @@ fi
 if [ -f "$EXECUTER_PRIMER_FILE" ]; then
     echo "Injecting EXECUTER primer..."
     while IFS= read -r line; do
-        tmux -L "$SOCKET" send-keys -t "$SESSION".1 "$line" C-m
+        if [ -n "$line" ]; then
+            tmux -L "$SOCKET" send-keys -t "$SESSION".1 "$line" C-m
+        else
+            # Send just Enter for empty line
+            tmux -L "$SOCKET" send-keys -t "$SESSION".1 C-m
+        fi
     done < "$EXECUTER_PRIMER_FILE"
 else
     echo -e "${YELLOW}Warning: EXECUTER primer file not found at $EXECUTER_PRIMER_FILE${NC}"

@@ -152,8 +152,8 @@ def main():
                 print("======================\n")
 
             elif line.strip() and not in_multiline:
-                # Echo back for simple inputs
-                print(f"Received: {line}")
+                # Ignore other inputs silently
+                pass
 
         except EOFError:
             break
