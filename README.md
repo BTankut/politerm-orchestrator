@@ -68,6 +68,12 @@ python3 proto/poli_session_wizard.py
 ./start_project.sh
 ```
 
+- GUI wizard lets you pick planner/executer modes with one click:
+  - Planner: `claude`, `claude --continue`, `claude --dangerously-skip-permissions`, `claude --continue --dangerously-skip-permissions`
+  - Executer: `codex`, `codex resume --last`, `codex resume --yolo`, `codex resume --last --yolo`
+- You can enter custom commands and toggle tmux logging/auto-attach and choose pane layout (split panes vs separate windows).
+- Without a display you can fall back to the text wizard via `python3 proto/poli_session_wizard.py --cli`.
+
 ### 4. Run a task
 ```bash
 # Using the orchestrator

@@ -1,21 +1,75 @@
 #!/usr/bin/env python3
-"""Interactive setup wizard for PoliTerm continuous dialogue sessions."""
+"""PoliTerm session wizard with Tkinter GUI and CLI fallback."""
+
+from __future__ import annotations
+
+import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
-# Repo root is two levels up from this file
+from typing import Dict, List, Optional, Tuple
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+except Exception:  # pragma: no cover
+    tk = None
+    filedialog = None
+    messagebox = None
+    ttk = None
+
+if tk is None and os.environ.get("POLI_WIZARD_ALT_EXEC") != "1":
+    for candidate in ("python3.11", "python3.10", "python3.9", "python3.12", "python3.13"):
+        alt = shutil.which(candidate)
+        if not alt:
+            continue
+        try:
+            subprocess.run([alt, "-c", "import tkinter"], check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            continue
+        os.environ["POLI_WIZARD_ALT_EXEC"] = "1"
+        os.execv(alt, [alt, str(Path(__file__).resolve())] + sys.argv[1:])
+    print(
+        "tkinter not available; falling back to CLI. Install via `python3 -m pip install tk` "
+        "or Homebrew `brew install python-tk@3.9`."
+    )
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 CONFIG_DIR = REPO_ROOT / "config"
 LOG_DIR = REPO_ROOT / "logs"
+
 DEFAULT_SOCKET = os.environ.get("POLI_TMUX_SOCKET", "poli")
 DEFAULT_SESSION = os.environ.get("POLI_TMUX_SESSION", "main")
 SESSION_STATE_FILE = CONFIG_DIR / "last_session.json"
+DEBUG_TMUX = os.environ.get("POLI_WIZARD_DEBUG", "1").lower() not in ("0", "false", "no")
+AUTO_ATTACH = os.environ.get("POLI_WIZARD_ATTACH", "1").lower() not in ("0", "false", "no")
+INSIDE_TMUX = bool(os.environ.get("TMUX"))
+
+CUSTOM_LABEL = "Custom command"
+
+PLANNER_MODES: List[Tuple[str, str]] = [
+    ("Standard (claude)", "claude"),
+    ("Continue (claude --continue)", "claude --continue"),
+    ("Dangerous skip (claude --dangerously-skip-permissions)", "claude --dangerously-skip-permissions"),
+    (
+        "Continue + dangerous skip (claude --continue --dangerously-skip-permissions)",
+        "claude --continue --dangerously-skip-permissions",
+    ),
+]
+EXECUTER_MODES: List[Tuple[str, str]] = [
+    ("Standard (codex)", "codex"),
+    ("Resume (codex resume --last)", "codex resume --last"),
+    ("YOLO (codex resume --yolo)", "codex resume --yolo"),
+    ("Resume + YOLO (codex resume --last --yolo)", "codex resume --last --yolo"),
+]
+
+
 @dataclass
 class SessionConfig:
     project_dir: Path
@@ -23,56 +77,546 @@ class SessionConfig:
     executer_cmd: str
     socket: str = DEFAULT_SOCKET
     session: str = DEFAULT_SESSION
+
     @property
     def planner_cwd(self) -> Path:
         return self.project_dir
+
     @property
     def executer_cwd(self) -> Path:
         return self.project_dir
+
+
+def run_tmux_command(
+    args: List[str],
+    *,
+    check: bool = True,
+    capture: bool = True,
+    desc: Optional[str] = None,
+) -> subprocess.CompletedProcess:
+    cmd_display = " ".join(args)
+    prefix = f"[tmux:{desc}] " if desc else "[tmux] "
+    if DEBUG_TMUX:
+        print(prefix + cmd_display)
+    try:
+        result = subprocess.run(args, text=True, capture_output=capture, check=check)
+        if DEBUG_TMUX and capture:
+            if result.stdout:
+                print(prefix + "stdout: " + result.stdout.strip())
+            if result.stderr:
+                print(prefix + "stderr: " + result.stderr.strip())
+        return result
+    except subprocess.CalledProcessError as exc:
+        if capture:
+            if exc.stdout:
+                print(prefix + "stdout: " + exc.stdout.strip())
+            if exc.stderr:
+                print(prefix + "stderr: " + exc.stderr.strip())
+        elif DEBUG_TMUX:
+            print(prefix + f"command failed with return code {exc.returncode}")
+        if DEBUG_TMUX:
+            print(prefix + f"ERROR running command: {cmd_display}")
+        if check:
+            raise
+        return exc
+
+
+def tmux_socket_args(socket: str) -> List[str]:
+    return ["tmux", "-L", socket]
+
+
+def kill_existing_session(config: SessionConfig) -> None:
+    try:
+        run_tmux_command(
+            tmux_socket_args(config.socket) + ["has-session", "-t", config.session],
+            desc="check-session",
+        )
+    except subprocess.CalledProcessError:
+        return
+
+    print(f"\n⚠️  Session '{config.session}' already exists. Cleaning up...")
+    run_tmux_command(
+        ["bash", str(REPO_ROOT / "scripts" / "kill_tmux.sh")],
+        check=False,
+        desc="kill-session",
+    )
+    time.sleep(0.5)
+
+
+def start_tmux_session(config: SessionConfig, layout: str) -> None:
+    args = tmux_socket_args(config.socket)
+
+    run_tmux_command(
+        args
+        + [
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            config.session,
+            "-c",
+            str(config.planner_cwd),
+        ],
+        desc="new-session",
+    )
+
+    run_tmux_command(
+        args + ["send-keys", "-t", f"{config.session}.0", config.planner_cmd, "C-m"],
+        desc="planner-start",
+    )
+
+    if layout == "split":
+        run_tmux_command(
+            args
+            + [
+                "split-window",
+                "-h",
+                "-t",
+                config.session,
+                "-c",
+                str(config.executer_cwd),
+            ],
+            desc="split-window",
+        )
+        run_tmux_command(
+            args + ["send-keys", "-t", f"{config.session}.1", config.executer_cmd, "C-m"],
+            desc="executer-start",
+        )
+    else:
+        run_tmux_command(
+            args
+            + [
+                "new-window",
+                "-t",
+                config.session,
+                "-n",
+                "executer",
+                "-c",
+                str(config.executer_cwd),
+            ],
+            desc="new-window",
+        )
+        time.sleep(1.0)
+        run_tmux_command(
+            args + ["send-keys", "-t", f"{config.session}:executer.0", config.executer_cmd, "C-m"],
+            desc="executer-start",
+        )
+        run_tmux_command(
+            args + ["select-window", "-t", f"{config.session}:0"],
+            desc="select-planner",
+            capture=False,
+        )
+
+    time.sleep(2.0)
+
+
+def send_lines_to_target(config: SessionConfig, target: str, lines: List[str]) -> None:
+    args = tmux_socket_args(config.socket)
+
+    for line in lines:
+        if line:
+            preview = line if len(line) <= 60 else line[:57] + "..."
+            run_tmux_command(
+                args + ["send-keys", "-t", target, "--", line],
+                desc=f"{target}:text '{preview}'",
+            )
+        run_tmux_command(
+            args + ["send-keys", "-t", target, "C-m"],
+            desc=f"{target}:enter",
+        )
+        time.sleep(0.05)
+
+    # ensure prompt is clean
+    run_tmux_command(
+        args + ["send-keys", "-t", target, "C-u"],
+        desc=f"{target}:clear",
+        capture=False,
+    )
+    run_tmux_command(args + ["send-keys", "-t", target, "C-m"], desc=f"{target}:newline", capture=False)
+
+
+def persist_session(config: SessionConfig, debug_tmux: bool, auto_attach: bool, layout: str) -> None:
+    LOG_DIR.mkdir(exist_ok=True)
+    CONFIG_DIR.mkdir(exist_ok=True)
+    data = {
+        "project_dir": str(config.project_dir),
+        "planner_cmd": config.planner_cmd,
+        "executer_cmd": config.executer_cmd,
+        "socket": config.socket,
+        "session": config.session,
+        "debug_tmux": bool(debug_tmux),
+        "auto_attach": bool(auto_attach),
+        "layout": layout,
+        "saved_at": time.time(),
+    }
+    SESSION_STATE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def load_previous_session() -> Tuple[Optional[SessionConfig], Dict[str, object]]:
+    prefs: Dict[str, object] = {
+        "debug_tmux": DEBUG_TMUX,
+        "auto_attach": AUTO_ATTACH,
+        "layout": "split",
+    }
+    if not SESSION_STATE_FILE.exists():
+        return None, prefs
+    try:
+        data = json.loads(SESSION_STATE_FILE.read_text(encoding="utf-8"))
+        config = SessionConfig(
+            project_dir=Path(data["project_dir"]).expanduser(),
+            planner_cmd=data["planner_cmd"],
+            executer_cmd=data["executer_cmd"],
+            socket=data.get("socket", DEFAULT_SOCKET),
+            session=data.get("session", DEFAULT_SESSION),
+        )
+        prefs["debug_tmux"] = bool(data.get("debug_tmux", prefs["debug_tmux"]))
+        prefs["auto_attach"] = bool(data.get("auto_attach", prefs["auto_attach"]))
+        prefs["layout"] = data.get("layout", prefs["layout"])
+        return config, prefs
+    except Exception:
+        return None, prefs
+
+
+def attach_tmux_session(config: SessionConfig, auto_attach: bool) -> None:
+    has_tty = sys.stdin.isatty() and sys.stdout.isatty()
+    if INSIDE_TMUX or not has_tty or not auto_attach:
+        print(f"\nTmux ready. Attach manually with: tmux -L {config.socket} attach -t {config.session}")
+        return
+
+    print("\nAttaching to tmux... (detach with Ctrl-b then d)")
+    result = run_tmux_command(
+        tmux_socket_args(config.socket) + ["attach", "-t", config.session],
+        check=False,
+        capture=False,
+        desc="attach",
+    )
+    if isinstance(result, subprocess.CompletedProcess) and result.returncode != 0:
+        print(f"⚠️  tmux attach failed. Run manually: tmux -L {config.socket} attach -t {config.session}")
+
+
 def prompt_with_default(message: str, default: Optional[str] = None) -> str:
     suffix = f" [{default}]" if default else ""
     value = input(f"{message}{suffix}: ").strip()
     return value or (default or "")
-def choose_project_dir(previous: Optional[Path] = None) -> Path:
-    default_dir = previous or Path.cwd()
-    while True:
-        raw = prompt_with_default("Çalışma klasörü", str(default_dir))
-        path = Path(raw).expanduser().resolve()
-        if path.exists():
-            return path
-        create = input(f"{path} mevcut değil. Oluşturulsun mu? [y/N]: ").strip().lower()
-        if create == "y":
-            path.mkdir(parents=True, exist_ok=True)
-            return path
-def choose_cli_commands(previous: Optional[SessionConfig] = None) -> SessionConfig:
-    presets = {
-        "1": ("claude", "codex", "Claude (planner) + Codex (executer)"),
-        "2": ("claude", "claude", "Double Claude"),
-    }
-    print("\nPlanner/Executer CLI seçimi:")
-    for key, (_, _, label) in presets.items():
-        print(f"  {key}. {label}")
-    print("  3. Özel komutlar")
-    default_choice = ""
-    if previous:
-        for key, (plan_cmd, exec_cmd, _) in presets.items():
-            if plan_cmd == previous.planner_cmd and exec_cmd == previous.executer_cmd:
+
+
+def choose_command_cli(
+    role: str,
+    options: List[Tuple[str, str]],
+    previous_cmd: Optional[str],
+) -> str:
+    option_map: Dict[str, str] = {}
+    print(f"\n{role} command")
+    for idx, (label, command) in enumerate(options, start=1):
+        option_map[str(idx)] = command
+        print(f"  {idx}. {command}")
+    custom_index = str(len(options) + 1)
+    print(f"  {custom_index}. {CUSTOM_LABEL}")
+
+    default_choice = custom_index
+    if previous_cmd:
+        for key, command in option_map.items():
+            if command.strip() == previous_cmd.strip():
                 default_choice = key
                 break
+
+    choice = prompt_with_default("Choice", default_choice)
+    if choice == custom_index:
+        default_cmd = previous_cmd or ""
+        custom_value = prompt_with_default("Custom command", default_cmd)
+        if not custom_value:
+            raise ValueError(f"{role} command cannot be empty")
+        return custom_value
+
+    if choice not in option_map:
+        raise ValueError("Invalid choice")
+    return option_map[choice]
+
+
+def run_cli_flow(
+    previous: Optional[SessionConfig],
+    prefs: Dict[str, object],
+) -> Tuple[Optional[SessionConfig], bool, bool, str]:
+    print("=" * 60)
+    print("PoliTerm Session Wizard (CLI)")
+    print("=" * 60)
+
+    prev_planner = previous.planner_cmd if previous else None
+    prev_executer = previous.executer_cmd if previous else None
+
+    planner_cmd = choose_command_cli("Planner", PLANNER_MODES, prev_planner)
+    executer_cmd = choose_command_cli("Executer", EXECUTER_MODES, prev_executer)
+
+    default_dir = previous.project_dir if previous else Path.cwd()
+    project_dir = Path(
+        prompt_with_default("Working directory", str(default_dir))
+    ).expanduser().resolve()
+
+    if not project_dir.exists():
+        answer = prompt_with_default(f"Create {project_dir}?", "y").lower()
+        if answer in ("y", "yes", "e"):
+            project_dir.mkdir(parents=True, exist_ok=True)
         else:
-            default_choice = "3"
-    choice = prompt_with_default("Seçiminiz", default_choice or "1")
-    if choice in presets:
-        planner_cmd, executer_cmd, label = presets[choice]
-        print(f"→ {label} seçildi")
-    else:
-        planner_cmd = prompt_with_default("Planner komutu", previous.planner_cmd if previous else "claude")
-        executer_cmd = prompt_with_default("Executer komutu", previous.executer_cmd if previous else "codex")
-    return SessionConfig(
-        project_dir=Path(),  # placeholder; güncel değer daha sonra atanacak
+            print("Cancelled.")
+            return None, bool(prefs["debug_tmux"]), bool(prefs["auto_attach"]), str(prefs["layout"])
+
+    debug_choice = prompt_with_default(
+        "Log tmux commands?", "y" if prefs["debug_tmux"] else "n"
+    ).lower()
+    auto_choice = prompt_with_default(
+        "Auto attach tmux?",
+        "y" if prefs["auto_attach"] else "n",
+    ).lower()
+    layout_choice = prompt_with_default(
+        "Layout (split/windows)", str(prefs["layout"])
+    ).lower()
+    if layout_choice not in ("split", "windows"):
+        layout_choice = str(prefs["layout"])
+
+    config = SessionConfig(
+        project_dir=project_dir,
         planner_cmd=planner_cmd,
         executer_cmd=executer_cmd,
+        socket=DEFAULT_SOCKET,
+        session=DEFAULT_SESSION,
     )
+
+    print("\nSummary:")
+    print(f"  Working directory : {config.project_dir}")
+    print(f"  Planner command : {config.planner_cmd}")
+    print(f"  Executer command : {config.executer_cmd}")
+    print(f"  tmux socket     : {config.socket}")
+    print(f"  tmux session    : {config.session}")
+
+    confirm = prompt_with_default("Proceed?", "y").lower()
+    if confirm == "n":
+        print("Cancelled.")
+        return None, bool(prefs["debug_tmux"]), bool(prefs["auto_attach"]), str(prefs["layout"])
+
+    return (
+        config,
+        debug_choice not in ("n", "no", "h"),
+        auto_choice not in ("n", "no", "h"),
+        layout_choice,
+    )
+
+
+def resolve_mode(command: Optional[str], options: List[Tuple[str, str]]) -> Tuple[str, str]:
+    if command:
+        cmd_clean = command.strip()
+        for label, preset in options:
+            if preset.strip() == cmd_clean:
+                return label, ""
+        return CUSTOM_LABEL, cmd_clean
+    return options[0][0], ""
+
+
+def build_command(mode: str, custom_value: str, options: Dict[str, str]) -> str:
+    if mode == CUSTOM_LABEL:
+        return custom_value.strip()
+    return options.get(mode, "").strip()
+
+
+def launch_gui(
+    previous: Optional[SessionConfig],
+    prefs: Dict[str, object],
+) -> Tuple[Optional[SessionConfig], bool, bool, str]:
+    if tk is None or ttk is None or filedialog is None:
+        return None, bool(prefs["debug_tmux"]), bool(prefs["auto_attach"]), str(prefs["layout"])
+
+    root = tk.Tk()
+    root.title("PoliTerm Session Wizard")
+    root.geometry("700x540")
+    root.minsize(660, 480)
+
+    style = ttk.Style(root)
+    if "clam" in style.theme_names():
+        style.theme_use("clam")
+
+    planner_map = {label: cmd for label, cmd in PLANNER_MODES}
+    executer_map = {label: cmd for label, cmd in EXECUTER_MODES}
+
+    planner_mode_default, planner_custom_default = resolve_mode(
+        previous.planner_cmd if previous else None, PLANNER_MODES
+    )
+    executer_mode_default, executer_custom_default = resolve_mode(
+        previous.executer_cmd if previous else None, EXECUTER_MODES
+    )
+
+    dir_var = tk.StringVar(value=str(previous.project_dir if previous else Path.cwd()))
+    planner_mode_var = tk.StringVar(value=planner_mode_default)
+    planner_custom_var = tk.StringVar(value=planner_custom_default)
+    planner_command_var = tk.StringVar()
+    executer_mode_var = tk.StringVar(value=executer_mode_default)
+    executer_custom_var = tk.StringVar(value=executer_custom_default)
+    executer_command_var = tk.StringVar()
+    debug_var = tk.BooleanVar(value=bool(prefs["debug_tmux"]))
+    attach_var = tk.BooleanVar(value=bool(prefs["auto_attach"]))
+    layout_default = str(prefs["layout"]) if str(prefs["layout"]) in ("split", "windows") else "split"
+
+    result: Dict[str, object] = {
+        "config": None,
+        "debug": bool(prefs["debug_tmux"]),
+        "attach": bool(prefs["auto_attach"]),
+        "layout": layout_default,
+    }
+
+    main_frame = ttk.Frame(root, padding=16)
+    main_frame.pack(fill="both", expand=True)
+    for col in range(3):
+        main_frame.columnconfigure(col, weight=1)
+    main_frame.rowconfigure(11, weight=1)
+
+    ttk.Label(main_frame, text="Working directory").grid(row=0, column=0, sticky="w")
+    dir_entry = ttk.Entry(main_frame, textvariable=dir_var, width=50)
+    dir_entry.grid(row=1, column=0, columnspan=2, sticky="we", pady=(2, 8))
+    ttk.Button(
+        main_frame,
+        text="Browse",
+        width=12,
+        command=lambda: browse_directory(dir_var),
+    ).grid(row=1, column=2, sticky="e")
+
+    ttk.Label(main_frame, text="Planner mode").grid(row=2, column=0, sticky="w")
+    planner_combo = ttk.Combobox(
+        main_frame,
+        state="readonly",
+        values=[label for label, _ in PLANNER_MODES] + [CUSTOM_LABEL],
+        textvariable=planner_mode_var,
+    )
+    planner_combo.grid(row=3, column=0, columnspan=3, sticky="we")
+    planner_custom_entry = ttk.Entry(main_frame, textvariable=planner_custom_var, width=50)
+    planner_custom_entry.grid(row=4, column=0, columnspan=3, sticky="we", pady=(2, 6))
+    planner_command_label = ttk.Label(main_frame, text="Command: ")
+    planner_command_label.grid(row=5, column=0, columnspan=3, sticky="w")
+
+    ttk.Label(main_frame, text="Executer mode").grid(row=6, column=0, sticky="w", pady=(10, 0))
+    executer_combo = ttk.Combobox(
+        main_frame,
+        state="readonly",
+        values=[label for label, _ in EXECUTER_MODES] + [CUSTOM_LABEL],
+        textvariable=executer_mode_var,
+    )
+    executer_combo.grid(row=7, column=0, columnspan=3, sticky="we")
+    executer_custom_entry = ttk.Entry(main_frame, textvariable=executer_custom_var, width=50)
+    executer_custom_entry.grid(row=8, column=0, columnspan=3, sticky="we", pady=(2, 6))
+    executer_command_label = ttk.Label(main_frame, text="Command: ")
+    executer_command_label.grid(row=9, column=0, columnspan=3, sticky="w")
+
+    options_frame = ttk.LabelFrame(main_frame, text="Options")
+    options_frame.grid(row=10, column=0, columnspan=3, pady=(12, 0), sticky="we")
+    options_frame.columnconfigure(0, weight=1)
+    ttk.Checkbutton(options_frame, text="Log tmux commands", variable=debug_var).grid(
+        row=0, column=0, sticky="w", padx=8, pady=(4, 2)
+    )
+    ttk.Checkbutton(options_frame, text="Auto attach tmux", variable=attach_var).grid(
+        row=1, column=0, sticky="w", padx=8, pady=(0, 6)
+    )
+
+    layout_frame = ttk.LabelFrame(main_frame, text="Layout")
+    layout_frame.grid(row=11, column=0, columnspan=3, pady=(12, 0), sticky="we")
+    layout_frame.columnconfigure(0, weight=1)
+    layout_var = tk.StringVar(value=layout_default)
+    ttk.Radiobutton(
+        layout_frame,
+        text="Split panes (one window)",
+        value="split",
+        variable=layout_var,
+    ).grid(row=0, column=0, sticky="w", padx=8, pady=(4, 2))
+    ttk.Radiobutton(
+        layout_frame,
+        text="Separate windows",
+        value="windows",
+        variable=layout_var,
+    ).grid(row=1, column=0, sticky="w", padx=8, pady=(0, 6))
+
+    buttons = ttk.Frame(main_frame)
+    buttons.grid(row=12, column=0, columnspan=3, pady=(18, 0), sticky="e")
+    ttk.Button(buttons, text="Cancel", command=root.destroy).pack(side="right", padx=(0, 8))
+
+    def on_start() -> None:
+        project_path = Path(dir_var.get().strip()).expanduser()
+        if not project_path.exists():
+            if not messagebox.askyesno("Create directory", f"Create {project_path}?"):
+                return
+            try:
+                project_path.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                messagebox.showerror("Error", f"Failed to create directory:\n{exc}")
+                return
+
+        planner_command = build_command(
+            planner_mode_var.get(), planner_custom_var.get(), planner_map
+        )
+        executer_command = build_command(
+            executer_mode_var.get(), executer_custom_var.get(), executer_map
+        )
+
+        if not planner_command:
+            messagebox.showerror("Error", "Planner command cannot be empty")
+            return
+        if not executer_command:
+            messagebox.showerror("Error", "Executer command cannot be empty")
+            return
+
+        result["config"] = SessionConfig(
+            project_dir=project_path,
+            planner_cmd=planner_command,
+            executer_cmd=executer_command,
+            socket=DEFAULT_SOCKET,
+            session=DEFAULT_SESSION,
+        )
+        result["debug"] = bool(debug_var.get())
+        result["attach"] = bool(attach_var.get())
+        result["layout"] = layout_var.get()
+        root.destroy()
+
+    ttk.Button(buttons, text="Start", command=on_start).pack(side="right")
+
+    def refresh_planner_state(*_: object) -> None:
+        is_custom = planner_mode_var.get() == CUSTOM_LABEL
+        planner_custom_entry.configure(state="normal" if is_custom else "disabled")
+        planner_command = build_command(
+            planner_mode_var.get(), planner_custom_var.get(), planner_map
+        )
+        planner_command_var.set(planner_command)
+        planner_command_label.configure(text=f"Command: {planner_command or '-'}")
+
+    def refresh_executer_state(*_: object) -> None:
+        is_custom = executer_mode_var.get() == CUSTOM_LABEL
+        executer_custom_entry.configure(state="normal" if is_custom else "disabled")
+        executer_command = build_command(
+            executer_mode_var.get(), executer_custom_var.get(), executer_map
+        )
+        executer_command_var.set(executer_command)
+        executer_command_label.configure(text=f"Command: {executer_command or '-'}")
+
+    def browse_directory(var: tk.StringVar) -> None:
+        initial = var.get() or str(Path.cwd())
+        selected = filedialog.askdirectory(initialdir=initial)
+        if selected:
+            var.set(selected)
+
+    planner_mode_var.trace_add("write", refresh_planner_state)
+    planner_custom_var.trace_add("write", refresh_planner_state)
+    executer_mode_var.trace_add("write", refresh_executer_state)
+    executer_custom_var.trace_add("write", refresh_executer_state)
+
+    refresh_planner_state()
+    refresh_executer_state()
+
+    root.protocol("WM_DELETE_WINDOW", root.destroy)
+    root.mainloop()
+
+    return (
+        result["config"],
+        bool(result["debug"]),
+        bool(result["attach"]),
+        str(result["layout"]),
+    )
+
+
 def load_primer_lines(kind: str) -> List[str]:
     candidates = [
         CONFIG_DIR / f"{kind}_primer_v3.txt",
@@ -90,136 +634,90 @@ def load_primer_lines(kind: str) -> List[str]:
     return [
         "You are EXECUTER. Wait for plans from PLANNER and respond with STATUS and RESULT blocks as required.",
     ]
-def run_tmux_command(args: List[str], check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(args, text=True, capture_output=False, check=check)
-def tmux_socket_args(socket: str) -> List[str]:
-    return ["tmux", "-L", socket]
-
-def kill_existing_session(config: SessionConfig) -> None:
-    try:
-        run_tmux_command(tmux_socket_args(config.socket) + ["has-session", "-t", config.session])
-    except subprocess.CalledProcessError:
-        return
-    print(f"\n⚠️  '{config.session}' oturumu zaten açık. Kapatılıyor...")
-    run_tmux_command(["bash", str(REPO_ROOT / "scripts" / "kill_tmux.sh")], check=False)
-    time.sleep(0.5)
 
 
-def attach_tmux_session(config: SessionConfig) -> None:
-    """Attach to the newly created tmux session"""
-    print("\nTmux oturumu açılıyor... (ayrılmak için Ctrl-b ardından d)")
-    result = run_tmux_command(
-        tmux_socket_args(config.socket) + ["attach", "-t", config.session],
-        check=False
-    )
-    if isinstance(result, subprocess.CompletedProcess) and result.returncode != 0:
-        print(f"⚠️  tmux attach başarısız. Elle çalıştırın: tmux -L {config.socket} attach -t {config.session}")
-
-
-def start_tmux_session(config: SessionConfig) -> None:
-    args = tmux_socket_args(config.socket)
-
-    run_tmux_command(args + [
-        "-f", "/dev/null",
-        "new-session",
-        "-d",
-        "-s",
-        config.session,
-        "-c",
-        str(config.planner_cwd),
-    ])
-
-    run_tmux_command(args + ["send-keys", "-t", f"{config.session}.0", config.planner_cmd, "C-m"])
-
-    run_tmux_command(args + [
-        "split-window",
-        "-h",
-        "-t",
-        config.session,
-        "-c",
-        str(config.executer_cwd),
-    ])
-
-    run_tmux_command(args + ["send-keys", "-t", f"{config.session}.1", config.executer_cmd, "C-m"])
-
-    time.sleep(2.0)
-
-
-def send_lines_to_pane(config: SessionConfig, pane_index: int, lines: List[str]) -> None:
-    args = tmux_socket_args(config.socket)
-    target = f"{config.session}.{pane_index}"
-    for line in lines:
-        if line:
-            run_tmux_command(args + ["send-keys", "-t", target, line])
-        run_tmux_command(args + ["send-keys", "-t", target, "C-m"])
-        time.sleep(0.05)
-def persist_session(config: SessionConfig) -> None:
-    LOG_DIR.mkdir(exist_ok=True)
-    CONFIG_DIR.mkdir(exist_ok=True)
-    data = {
-        "project_dir": str(config.project_dir),
-        "planner_cmd": config.planner_cmd,
-        "executer_cmd": config.executer_cmd,
-        "socket": config.socket,
-        "session": config.session,
-        "saved_at": time.time(),
-    }
-    SESSION_STATE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-def load_previous_session() -> Optional[SessionConfig]:
-    if not SESSION_STATE_FILE.exists():
-        return None
-    try:
-        data = json.loads(SESSION_STATE_FILE.read_text(encoding="utf-8"))
-        return SessionConfig(
-            project_dir=Path(data["project_dir"]).expanduser(),
-            planner_cmd=data["planner_cmd"],
-            executer_cmd=data["executer_cmd"],
-            socket=data.get("socket", DEFAULT_SOCKET),
-            session=data.get("session", DEFAULT_SESSION),
-        )
-    except Exception:
-        return None
-def main() -> int:
-    print("=" * 60)
-    print("PoliTerm Başlangıç Sihirbazı")
-    print("=" * 60)
-    previous = load_previous_session()
-    temp_config = choose_cli_commands(previous)
-    project_dir = choose_project_dir(previous.project_dir if previous else None)
-    config = SessionConfig(
-        project_dir=project_dir,
-        planner_cmd=temp_config.planner_cmd,
-        executer_cmd=temp_config.executer_cmd,
-        socket=DEFAULT_SOCKET,
-        session=DEFAULT_SESSION,
-    )
-    print("\nÖzet:")
-    print(f"  Çalışma klasörü : {config.project_dir}")
-    print(f"  Planner komutu  : {config.planner_cmd}")
-    print(f"  Executer komutu : {config.executer_cmd}")
-    print(f"  tmux socket     : {config.socket}")
-    print(f"  tmux oturumu    : {config.session}")
-    confirm = input("Devam edilsin mi? [Y/n]: ").strip().lower()
-    if confirm == "n":
-        print("İptal edildi.")
-        return 1
+def orchestrate(
+    config: SessionConfig,
+    debug_tmux: bool,
+    auto_attach: bool,
+    layout: str,
+) -> None:
     config.project_dir.mkdir(parents=True, exist_ok=True)
     kill_existing_session(config)
-    start_tmux_session(config)
+    start_tmux_session(config, layout)
     planner_lines = load_primer_lines("planner")
     executer_lines = load_primer_lines("executer")
-    print("Roller yükleniyor...")
-    send_lines_to_pane(config, 0, planner_lines)
-    send_lines_to_pane(config, 1, executer_lines)
-    persist_session(config)
-    attach_tmux_session(config)
-    print("\nHazır! tmux'tan ayrıldıktan sonra:")
-    print("  - PLANNER ile konuşmaya devam edebilirsiniz.")
-    print("  - Gerekirse orchestrator'ı çalıştırmak için yeni bir terminalde: python3 proto/poli_orchestrator_v3.py --monitor")
-    return 0
-if __name__ == "__main__":
+    print("Injecting primers...")
+    send_lines_to_target(config, f"{config.session}.0", planner_lines)
+    executer_target = f"{config.session}.1" if layout == "split" else f"{config.session}:executer.0"
+    send_lines_to_target(config, executer_target, executer_lines)
+    persist_session(config, debug_tmux, auto_attach, layout)
+    attach_tmux_session(config, auto_attach)
+    print(
+        "\nReady! After detaching from tmux:\n"
+        "  - Continue working with the PLANNER pane.\n"
+        "  - Bridge the loop with: python3 proto/poli_orchestrator_v3.py --monitor"
+    )
+
+
+def main() -> int:
+    global DEBUG_TMUX, AUTO_ATTACH
+
+    parser = argparse.ArgumentParser(description="PoliTerm session wizard")
+    parser.add_argument("--cli", action="store_true", help="Force text-based wizard")
+    parser.add_argument("--no-attach", action="store_true", help="Do not auto-attach tmux")
+    parser.add_argument("--debug-tmux", action="store_true", help="Force tmux command logging")
+    parser.add_argument("--no-debug", action="store_true", help="Disable tmux command logging")
+
+    args = parser.parse_args()
+
+    if getattr(args, "debug_tmux", False):
+        DEBUG_TMUX = True
+    if args.no_debug:
+        DEBUG_TMUX = False
+    if args.no_attach:
+        AUTO_ATTACH = False
+
+    previous, prefs = load_previous_session()
+
+    config: Optional[SessionConfig]
+    debug_choice: bool
+    attach_choice: bool
+    layout_choice: str
+
+    if args.cli or tk is None or ttk is None:
+        if not args.cli and tk is None:
+            print(
+                "tkinter missing (_tkinter not found); falling back to CLI.\n"
+                "macOS tip: brew install python-tk@3.13 (or matching version),\n"
+                "or try python3 -m pip install tk."
+            )
+        try:
+            config, debug_choice, attach_choice, layout_choice = run_cli_flow(previous, prefs)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 1
+        if config is None:
+            return 1
+    else:
+        config, debug_choice, attach_choice, layout_choice = launch_gui(previous, prefs)
+        if config is None:
+            print("Cancelled.")
+            return 1
+
+    DEBUG_TMUX = debug_choice
+    AUTO_ATTACH = attach_choice
+
     try:
-        sys.exit(main())
+        orchestrate(config, DEBUG_TMUX, AUTO_ATTACH, layout_choice)
     except KeyboardInterrupt:
-        print("\nİptal edildi.")
-        sys.exit(1)
+        print("\nCancelled.")
+        return 1
+    except Exception as exc:
+        print(f"\nError: {exc}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
