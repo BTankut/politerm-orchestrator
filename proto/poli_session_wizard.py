@@ -46,6 +46,9 @@ LOG_DIR = REPO_ROOT / "logs"
 
 DEFAULT_SOCKET = os.environ.get("POLI_TMUX_SOCKET", "poli")
 DEFAULT_SESSION = os.environ.get("POLI_TMUX_SESSION", "main")
+DEFAULT_PLANNER_SESSION = os.environ.get("POLI_TMUX_PLANNER_SESSION", "planner")
+DEFAULT_EXECUTER_SESSION = os.environ.get("POLI_TMUX_EXECUTER_SESSION", "executer")
+DEFAULT_ROLE_WINDOW = os.environ.get("POLI_TMUX_ROLE_WINDOW", "tui")
 SESSION_STATE_FILE = CONFIG_DIR / "last_session.json"
 DEBUG_TMUX = os.environ.get("POLI_WIZARD_DEBUG", "1").lower() not in ("0", "false", "no")
 AUTO_ATTACH = os.environ.get("POLI_WIZARD_ATTACH", "1").lower() not in ("0", "false", "no")
@@ -77,6 +80,9 @@ class SessionConfig:
     executer_cmd: str
     socket: str = DEFAULT_SOCKET
     session: str = DEFAULT_SESSION
+    planner_session: str = DEFAULT_PLANNER_SESSION
+    executer_session: str = DEFAULT_EXECUTER_SESSION
+    window_name: str = DEFAULT_ROLE_WINDOW
 
     @property
     def planner_cwd(self) -> Path:
@@ -93,13 +99,22 @@ def run_tmux_command(
     check: bool = True,
     capture: bool = True,
     desc: Optional[str] = None,
+    stdin: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
 ) -> subprocess.CompletedProcess:
     cmd_display = " ".join(args)
     prefix = f"[tmux:{desc}] " if desc else "[tmux] "
     if DEBUG_TMUX:
         print(prefix + cmd_display)
     try:
-        result = subprocess.run(args, text=True, capture_output=capture, check=check)
+        result = subprocess.run(
+            args,
+            text=True,
+            capture_output=capture,
+            check=check,
+            input=stdin,
+            env=env,
+        )
         if DEBUG_TMUX and capture:
             if result.stdout:
                 print(prefix + "stdout: " + result.stdout.strip())
@@ -125,48 +140,72 @@ def tmux_socket_args(socket: str) -> List[str]:
     return ["tmux", "-L", socket]
 
 
-def kill_existing_session(config: SessionConfig) -> None:
-    try:
-        run_tmux_command(
-            tmux_socket_args(config.socket) + ["has-session", "-t", config.session],
-            desc="check-session",
+def kill_existing_sessions(config: SessionConfig) -> None:
+    args = tmux_socket_args(config.socket)
+    targets = [config.session, config.planner_session, config.executer_session]
+    killed_any = False
+
+    for session_name in dict.fromkeys(filter(None, targets)):
+        result = run_tmux_command(
+            args + ["has-session", "-t", session_name],
+            check=False,
+            capture=False,
+            desc=f"has-session:{session_name}",
         )
-    except subprocess.CalledProcessError:
-        return
+        if isinstance(result, subprocess.CompletedProcess) and result.returncode == 0:
+            if not killed_any:
+                print("\n⚠️  Existing PoliTerm sessions detected. Cleaning up...")
+                killed_any = True
+            run_tmux_command(
+                args + ["kill-session", "-t", session_name],
+                check=False,
+                capture=False,
+                desc=f"kill-session:{session_name}",
+            )
 
-    print(f"\n⚠️  Session '{config.session}' already exists. Cleaning up...")
-    run_tmux_command(
-        ["bash", str(REPO_ROOT / "scripts" / "kill_tmux.sh")],
+    server_check = run_tmux_command(
+        args + ["list-sessions"],
         check=False,
-        desc="kill-session",
+        desc="list-sessions",
     )
-    time.sleep(0.5)
+    if isinstance(server_check, subprocess.CompletedProcess):
+        still_running = server_check.returncode == 0 and bool(server_check.stdout.strip())
+        if not still_running:
+            run_tmux_command(
+                args + ["kill-server"],
+                check=False,
+                capture=False,
+                desc="kill-server",
+            )
+    if killed_any:
+        time.sleep(0.5)
 
 
-def start_tmux_session(config: SessionConfig, layout: str) -> None:
+def start_tmux_topology(config: SessionConfig, layout: str) -> None:
     args = tmux_socket_args(config.socket)
 
-    run_tmux_command(
-        args
-        + [
-            "-f",
-            "/dev/null",
-            "new-session",
-            "-d",
-            "-s",
-            config.session,
-            "-c",
-            str(config.planner_cwd),
-        ],
-        desc="new-session",
-    )
-
-    run_tmux_command(
-        args + ["send-keys", "-t", f"{config.session}.0", config.planner_cmd, "C-m"],
-        desc="planner-start",
-    )
-
     if layout == "split":
+        run_tmux_command(
+            args
+            + [
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-s",
+                config.session,
+                "-c",
+                str(config.planner_cwd),
+            ],
+            desc="new-session:main",
+        )
+
+        run_tmux_command(
+            args
+            + ["send-keys", "-t", f"{config.session}.0", "--", config.planner_cmd, "C-m"],
+            desc="planner-start",
+        )
+
         run_tmux_command(
             args
             + [
@@ -180,60 +219,81 @@ def start_tmux_session(config: SessionConfig, layout: str) -> None:
             desc="split-window",
         )
         run_tmux_command(
-            args + ["send-keys", "-t", f"{config.session}.1", config.executer_cmd, "C-m"],
+            args
+            + ["send-keys", "-t", f"{config.session}.1", "--", config.executer_cmd, "C-m"],
             desc="executer-start",
         )
     else:
-        run_tmux_command(
-            args
-            + [
-                "new-window",
-                "-t",
-                config.session,
-                "-n",
-                "executer",
-                "-c",
-                str(config.executer_cwd),
-            ],
-            desc="new-window",
-        )
-        time.sleep(1.0)
-        run_tmux_command(
-            args + ["send-keys", "-t", f"{config.session}:executer.0", config.executer_cmd, "C-m"],
-            desc="executer-start",
-        )
-        run_tmux_command(
-            args + ["select-window", "-t", f"{config.session}:0"],
-            desc="select-planner",
-            capture=False,
-        )
+        for role, session_name, cwd, cmd in (
+            ("planner", config.planner_session, config.planner_cwd, config.planner_cmd),
+            ("executer", config.executer_session, config.executer_cwd, config.executer_cmd),
+        ):
+            run_tmux_command(
+                args
+                + [
+                    "-f",
+                    "/dev/null",
+                    "new-session",
+                    "-d",
+                    "-s",
+                    session_name,
+                    "-n",
+                    config.window_name,
+                    "-c",
+                    str(cwd),
+                ],
+                desc=f"new-session:{role}",
+            )
+            run_tmux_command(
+                args
+                + [
+                    "send-keys",
+                    "-t",
+                    f"{session_name}:{config.window_name}.0",
+                    "--",
+                    cmd,
+                    "C-m",
+                ],
+                desc=f"{role}-start",
+            )
 
     time.sleep(2.0)
 
 
 def send_lines_to_target(config: SessionConfig, target: str, lines: List[str]) -> None:
     args = tmux_socket_args(config.socket)
+    block = "\n".join(lines).rstrip("\n")
 
-    for line in lines:
-        if line:
-            preview = line if len(line) <= 60 else line[:57] + "..."
-            run_tmux_command(
-                args + ["send-keys", "-t", target, "--", line],
-                desc=f"{target}:text '{preview}'",
-            )
+    if block:
+        preview = block.replace("\n", " ⏎ ")
+        if len(preview) > 60:
+            preview = preview[:57] + "..."
         run_tmux_command(
-            args + ["send-keys", "-t", target, "C-m"],
-            desc=f"{target}:enter",
+            args + ["load-buffer", "-"],
+            desc=f"{target}:load-buffer '{preview}'",
+            capture=False,
+            stdin=block + "\n",
         )
-        time.sleep(0.05)
+        time.sleep(0.1)
+        run_tmux_command(
+            args + ["paste-buffer", "-d", "-t", target],
+            desc=f"{target}:paste",
+            capture=False,
+        )
+        time.sleep(0.1)
 
-    # ensure prompt is clean
     run_tmux_command(
-        args + ["send-keys", "-t", target, "C-u"],
-        desc=f"{target}:clear",
+        args + ["send-keys", "-t", target, "C-m"],
+        desc=f"{target}:enter",
         capture=False,
     )
-    run_tmux_command(args + ["send-keys", "-t", target, "C-m"], desc=f"{target}:newline", capture=False)
+    time.sleep(0.15)
+    run_tmux_command(
+        args + ["send-keys", "-t", target, "C-m"],
+        desc=f"{target}:newline",
+        capture=False,
+    )
+    time.sleep(0.15)
 
 
 def persist_session(config: SessionConfig, debug_tmux: bool, auto_attach: bool, layout: str) -> None:
@@ -245,6 +305,9 @@ def persist_session(config: SessionConfig, debug_tmux: bool, auto_attach: bool, 
         "executer_cmd": config.executer_cmd,
         "socket": config.socket,
         "session": config.session,
+        "planner_session": config.planner_session,
+        "executer_session": config.executer_session,
+        "window_name": config.window_name,
         "debug_tmux": bool(debug_tmux),
         "auto_attach": bool(auto_attach),
         "layout": layout,
@@ -269,6 +332,9 @@ def load_previous_session() -> Tuple[Optional[SessionConfig], Dict[str, object]]
             executer_cmd=data["executer_cmd"],
             socket=data.get("socket", DEFAULT_SOCKET),
             session=data.get("session", DEFAULT_SESSION),
+            planner_session=data.get("planner_session", DEFAULT_PLANNER_SESSION),
+            executer_session=data.get("executer_session", DEFAULT_EXECUTER_SESSION),
+            window_name=data.get("window_name", DEFAULT_ROLE_WINDOW),
         )
         prefs["debug_tmux"] = bool(data.get("debug_tmux", prefs["debug_tmux"]))
         prefs["auto_attach"] = bool(data.get("auto_attach", prefs["auto_attach"]))
@@ -278,21 +344,54 @@ def load_previous_session() -> Tuple[Optional[SessionConfig], Dict[str, object]]
         return None, prefs
 
 
-def attach_tmux_session(config: SessionConfig, auto_attach: bool) -> None:
+def attach_tmux_sessions(config: SessionConfig, auto_attach: bool, layout: str) -> None:
     has_tty = sys.stdin.isatty() and sys.stdout.isatty()
     if INSIDE_TMUX or not has_tty or not auto_attach:
-        print(f"\nTmux ready. Attach manually with: tmux -L {config.socket} attach -t {config.session}")
+        if layout == "split":
+            print(
+                f"\nTmux ready. Attach manually with: tmux -L {config.socket} attach -t {config.session}"
+            )
+        else:
+            print("\nTmux sessions ready. Attach manually:")
+            print(f"  tmux -L {config.socket} attach -t {config.planner_session}")
+            print(f"  tmux -L {config.socket} attach -t {config.executer_session}")
         return
 
-    print("\nAttaching to tmux... (detach with Ctrl-b then d)")
-    result = run_tmux_command(
-        tmux_socket_args(config.socket) + ["attach", "-t", config.session],
-        check=False,
-        capture=False,
-        desc="attach",
-    )
-    if isinstance(result, subprocess.CompletedProcess) and result.returncode != 0:
-        print(f"⚠️  tmux attach failed. Run manually: tmux -L {config.socket} attach -t {config.session}")
+    if layout == "split":
+        print("\nAttaching to tmux... (detach with Ctrl-b then d)")
+        result = run_tmux_command(
+            tmux_socket_args(config.socket) + ["attach", "-t", config.session],
+            check=False,
+            capture=False,
+            desc="attach",
+        )
+        if isinstance(result, subprocess.CompletedProcess) and result.returncode != 0:
+            print(
+                f"⚠️  tmux attach failed. Run manually: tmux -L {config.socket} attach -t {config.session}"
+            )
+        return
+
+    if sys.platform == "darwin":
+        applescript = f"""
+tell application "Terminal"
+  do script "tmux -L {config.socket} attach -t {config.planner_session}"
+  delay 0.3
+  do script "tmux -L {config.socket} attach -t {config.executer_session}"
+  activate
+end tell
+"""
+        try:
+            subprocess.run(["osascript"], input=applescript, text=True, check=True)
+            print(
+                "\nAttaching via Terminal.app (two windows). Detach with Ctrl-b then d in each window."
+            )
+            return
+        except subprocess.CalledProcessError:
+            print("⚠️  Failed to attach via Terminal.app. Falling back to manual instructions.")
+
+    print("\nTmux sessions ready. Attach manually:")
+    print(f"  tmux -L {config.socket} attach -t {config.planner_session}")
+    print(f"  tmux -L {config.socket} attach -t {config.executer_session}")
 
 
 def prompt_with_default(message: str, default: Optional[str] = None) -> str:
@@ -388,6 +487,8 @@ def run_cli_flow(
     print(f"  Executer command : {config.executer_cmd}")
     print(f"  tmux socket     : {config.socket}")
     print(f"  tmux session    : {config.session}")
+    print(f"  planner session : {config.planner_session}")
+    print(f"  executer session: {config.executer_session}")
 
     confirm = prompt_with_default("Proceed?", "y").lower()
     if confirm == "n":
@@ -643,20 +744,32 @@ def orchestrate(
     layout: str,
 ) -> None:
     config.project_dir.mkdir(parents=True, exist_ok=True)
-    kill_existing_session(config)
-    start_tmux_session(config, layout)
+    kill_existing_sessions(config)
+    start_tmux_topology(config, layout)
     planner_lines = load_primer_lines("planner")
     executer_lines = load_primer_lines("executer")
     print("Injecting primers...")
-    send_lines_to_target(config, f"{config.session}.0", planner_lines)
-    executer_target = f"{config.session}.1" if layout == "split" else f"{config.session}:executer.0"
+    if layout == "split":
+        planner_target = f"{config.session}.0"
+        executer_target = f"{config.session}.1"
+    else:
+        planner_target = f"{config.planner_session}:{config.window_name}.0"
+        executer_target = f"{config.executer_session}:{config.window_name}.0"
+
+    send_lines_to_target(config, planner_target, planner_lines)
     send_lines_to_target(config, executer_target, executer_lines)
     persist_session(config, debug_tmux, auto_attach, layout)
-    attach_tmux_session(config, auto_attach)
+    attach_tmux_sessions(config, auto_attach, layout)
+    if layout == "split":
+        followup = "  - Continue working with the PLANNER pane.\n"
+    else:
+        followup = (
+            "  - Keep both PLANNER and EXECUTER windows handy for the continuous loop.\n"
+        )
     print(
         "\nReady! After detaching from tmux:\n"
-        "  - Continue working with the PLANNER pane.\n"
-        "  - Bridge the loop with: python3 proto/poli_orchestrator_v3.py --monitor"
+        + followup
+        + "  - Bridge the loop with: python3 proto/poli_orchestrator_v3.py --monitor"
     )
 
 

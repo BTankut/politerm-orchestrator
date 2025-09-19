@@ -20,9 +20,26 @@ from datetime import datetime
 
 # Configuration from environment
 SOCKET = os.environ.get("POLI_TMUX_SOCKET", "poli")
-SESSION = os.environ.get("POLI_TMUX_SESSION", "main")
-PLANNER_PANE = f"{SESSION}.0"
-EXECUTER_PANE = f"{SESSION}.1"
+LEGACY_SESSION = os.environ.get("POLI_TMUX_SESSION")
+WINDOW_NAME = os.environ.get("POLI_TMUX_ROLE_WINDOW", "tui")
+
+if "POLI_PLANNER_TARGET" in os.environ and "POLI_EXECUTER_TARGET" in os.environ:
+    PLANNER_PANE = os.environ["POLI_PLANNER_TARGET"]
+    EXECUTER_PANE = os.environ["POLI_EXECUTER_TARGET"]
+elif LEGACY_SESSION and not (
+    os.environ.get("POLI_TMUX_PLANNER_SESSION") or os.environ.get("POLI_TMUX_EXECUTER_SESSION")
+):
+    PLANNER_PANE = f"{LEGACY_SESSION}.0"
+    EXECUTER_PANE = f"{LEGACY_SESSION}.1"
+else:
+    planner_session = os.environ.get("POLI_TMUX_PLANNER_SESSION", "planner")
+    executer_session = os.environ.get("POLI_TMUX_EXECUTER_SESSION", "executer")
+    PLANNER_PANE = os.environ.get(
+        "POLI_PLANNER_TARGET", f"{planner_session}:{WINDOW_NAME}.0"
+    )
+    EXECUTER_PANE = os.environ.get(
+        "POLI_EXECUTER_TARGET", f"{executer_session}:{WINDOW_NAME}.0"
+    )
 
 PLAN_TIMEOUT = float(os.environ.get("POLI_PLAN_TIMEOUT", "180"))
 EXEC_TIMEOUT = float(os.environ.get("POLI_EXEC_TIMEOUT", "900"))
@@ -48,6 +65,17 @@ if LOG_FILE:
 
 # tmux command base
 TMUX = ["tmux", "-L", SOCKET]
+
+
+def session_from_target(target: str) -> str:
+    if ":" in target:
+        return target.split(":", 1)[0]
+    return target.split(".", 1)[0]
+
+
+PLANNER_SESSION = session_from_target(PLANNER_PANE)
+EXECUTER_SESSION = session_from_target(EXECUTER_PANE)
+TARGET_SESSIONS = tuple(dict.fromkeys([PLANNER_SESSION, EXECUTER_SESSION]))
 
 
 class MessageType(Enum):
@@ -137,11 +165,12 @@ def sh(args: List[str], check: bool = True) -> str:
 
 def tmux_exists() -> bool:
     """Check if tmux session exists"""
-    try:
-        sh(TMUX + ["has-session", "-t", SESSION], check=True)
-        return True
-    except subprocess.CalledProcessError:
-        return False
+    for session_name in TARGET_SESSIONS:
+        try:
+            sh(TMUX + ["has-session", "-t", session_name], check=True)
+        except subprocess.CalledProcessError:
+            return False
+    return True
 
 
 def send_keys(target: str, text: str, with_enter: bool = True) -> None:
@@ -607,14 +636,15 @@ def interactive_mode():
 
             if user_input.lower() == 'status':
                 if tmux_exists():
-                    print("✅ tmux session is running")
-                    output = sh(TMUX + ["list-panes", "-t", SESSION], check=False)
-                    print(output)
+                    print("✅ tmux sessions are running")
+                    for sess in TARGET_SESSIONS:
+                        output = sh(TMUX + ["list-panes", "-t", sess], check=False)
+                        print(f"\nSession '{sess}':\n{output.strip()}" if output else f"\nSession '{sess}': (no panes)")
                     print(f"\nActive tasks: {len(STATE_TABLE)}")
                     for tid, state in STATE_TABLE.items():
                         print(f"  {tid}: {state.status} (round {state.round})")
                 else:
-                    print("❌ tmux session not found")
+                    print("❌ tmux sessions not found")
                 continue
 
             if user_input.lower() == 'state':
@@ -630,7 +660,10 @@ def interactive_mode():
                 continue
 
             if not tmux_exists():
-                print("❌ Error: tmux session not found. Run: bash scripts/bootstrap_tmux_v2.sh")
+                print(
+                    "❌ Error: tmux sessions not found. Launch them with:"
+                    " python3 proto/poli_session_wizard.py"
+                )
                 continue
 
             # Get max rounds from user
