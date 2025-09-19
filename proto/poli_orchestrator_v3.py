@@ -23,23 +23,51 @@ SOCKET = os.environ.get("POLI_TMUX_SOCKET", "poli")
 LEGACY_SESSION = os.environ.get("POLI_TMUX_SESSION")
 WINDOW_NAME = os.environ.get("POLI_TMUX_ROLE_WINDOW", "tui")
 
+
+def tmux_session_exists(session_name: str) -> bool:
+    if not session_name:
+        return False
+    try:
+        subprocess.run(
+            ["tmux", "-L", SOCKET, "has-session", "-t", session_name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
 if "POLI_PLANNER_TARGET" in os.environ and "POLI_EXECUTER_TARGET" in os.environ:
     PLANNER_PANE = os.environ["POLI_PLANNER_TARGET"]
     EXECUTER_PANE = os.environ["POLI_EXECUTER_TARGET"]
-elif LEGACY_SESSION and not (
-    os.environ.get("POLI_TMUX_PLANNER_SESSION") or os.environ.get("POLI_TMUX_EXECUTER_SESSION")
-):
-    PLANNER_PANE = f"{LEGACY_SESSION}.0"
-    EXECUTER_PANE = f"{LEGACY_SESSION}.1"
 else:
-    planner_session = os.environ.get("POLI_TMUX_PLANNER_SESSION", "planner")
-    executer_session = os.environ.get("POLI_TMUX_EXECUTER_SESSION", "executer")
-    PLANNER_PANE = os.environ.get(
-        "POLI_PLANNER_TARGET", f"{planner_session}:{WINDOW_NAME}.0"
-    )
-    EXECUTER_PANE = os.environ.get(
-        "POLI_EXECUTER_TARGET", f"{executer_session}:{WINDOW_NAME}.0"
-    )
+    env_planner_session = os.environ.get("POLI_TMUX_PLANNER_SESSION")
+    env_executer_session = os.environ.get("POLI_TMUX_EXECUTER_SESSION")
+
+    default_planner_session = env_planner_session or "planner"
+    default_executer_session = env_executer_session or "executer"
+
+    default_sessions_exist = tmux_session_exists(default_planner_session) and tmux_session_exists(default_executer_session)
+
+    if default_sessions_exist:
+        PLANNER_PANE = f"{default_planner_session}:{WINDOW_NAME}.0"
+        EXECUTER_PANE = f"{default_executer_session}:{WINDOW_NAME}.0"
+    elif LEGACY_SESSION and tmux_session_exists(LEGACY_SESSION):
+        PLANNER_PANE = f"{LEGACY_SESSION}.0"
+        EXECUTER_PANE = f"{LEGACY_SESSION}.1"
+    else:
+        # Fallback: use any explicit env overrides or defaults even if sessions are not up yet
+        fallback_planner = env_planner_session or LEGACY_SESSION or "planner"
+        fallback_executer = env_executer_session or LEGACY_SESSION or "executer"
+
+        if fallback_planner == fallback_executer:
+            PLANNER_PANE = f"{fallback_planner}.0"
+            EXECUTER_PANE = f"{fallback_executer}.1"
+        else:
+            PLANNER_PANE = f"{fallback_planner}:{WINDOW_NAME}.0"
+            EXECUTER_PANE = f"{fallback_executer}:{WINDOW_NAME}.0"
 
 PLAN_TIMEOUT = float(os.environ.get("POLI_PLAN_TIMEOUT", "180"))
 EXEC_TIMEOUT = float(os.environ.get("POLI_EXEC_TIMEOUT", "900"))
@@ -180,7 +208,7 @@ def send_keys(target: str, text: str, with_enter: bool = True) -> None:
     lines = text.split("\n")
     for line in lines:
         if line:
-            sh(TMUX + ["send-keys", "-t", target, line])
+            sh(TMUX + ["send-keys", "-t", target, "--", line])
         # Architecture specifies C-m for each line
         if with_enter:
             sh(TMUX + ["send-keys", "-t", target, "C-m"])
