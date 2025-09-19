@@ -1,14 +1,14 @@
 # PoliTerm Orchestrator – Minimal Working Architecture (TUI-first, tmux-driven)
 
 > **Purpose**: Build a **working engine** that orchestrates two AI CLI TUIs (Planner = `cli-1`, Executer = `cli-2`) in a **fully interactive TTY** without losing context.
-> **Key idea**: Run both TUIs inside persistent **PTYs** (via `tmux` panes). A lightweight **orchestrator** injects input (like keystrokes) and reads output to automate the **Planner ⇄ Executer** dialogue loop.
+> **Key idea**: Run both TUIs inside persistent **PTYs** managed by `tmux` (either split panes or dedicated sessions). A lightweight **orchestrator** injects input (like keystrokes) and reads output to automate the **Planner ⇄ Executer** dialogue loop.
 > **Why**: TUIs maintain project-scoped sessions (`cwd`-based), preserve context across time, and support `--continue`/`resume` flows—unlike one-shot command invocations.
 
 ---
 
 ## 0. High-Level Goals
 
-* ✅ Drive **two TUIs** in separate `tmux` panes: `Planner` (e.g., `claude`) and `Executer` (e.g., `codex`), each started in its own **workspace directory** so context is preserved.
+* ✅ Drive **two TUIs** under a shared `tmux` socket: `Planner` (e.g., `claude`) and `Executer` (e.g., `codex`), each started in its own **workspace directory** so context is preserved. They can live either in split panes of one session or in dedicated tmux sessions (default as of v3.1).
 * ✅ Establish a **machine-parsable contract** for inter-TUI messages using **tagged blocks** embedded in normal model output.
 * ✅ Provide a **single orchestrator** process that:
 
@@ -22,27 +22,33 @@
 ## 1. Architecture (MVP)
 
 ```
-+---------------------+       +---------------------+
-|  tmux session 'main'|       |  Orchestrator (Py)  |
-|  socket: -L poli    |       |---------------------|
-|---------------------|       | - send_keys(pane..) |
-| [pane 0] PLANNER    |<----->| - capture_tail(..)  |
-|   cmd: claude       |  I/O  | - parse_blocks(..)  |
-|   cwd: /ProjA       |       | - loop: Planner→Exec|
-|---------------------|       |         →Planner... |
-| [pane 1] EXECUTER   |       +---------------------+
-|   cmd: codex        |
-|   cwd: /ProjA       |
-+---------------------+
+tmux socket: poli
+
+┌───────────────┐       ┌──────────────────────┐
+│ session:planner│       │  Orchestrator (Py)   │
+│ window: tui    │<----->│ - send_keys()         │
+│ pane 0: PLANNER│  I/O  │ - capture_tail()      │
+│ cwd: /workspace│       │ - parse POLI blocks   │
+└───────────────┘       │ - continuous routing  │
+                        └──────────────────────┘
+┌────────────────┐
+│session:executer │
+│window: tui      │
+│pane 0: EXECUTER │
+│cwd: /workspace  │
+└────────────────┘
+
+Alt layout (legacy): single `main` session with pane 0 = planner, pane 1 = executer.
 ```
 
 **Key decisions**
 
 * **PTY/TUI**: We never “call the CLI” in one-shot mode. Instead, we keep **long-lived TUIs** running inside PTYs so workspace session state is retained.
-* **tmux control**: Orchestrator controls panes via `tmux -L poli` socket using:
+* **tmux control**: Orchestrator controls targets (panes inside sessions) via `tmux -L poli` socket using:
 
   * `send-keys` (inject input, including `Enter`)
   * `capture-pane -pJS -N` (tail of pane buffer)
+  * Targets default to `planner:tui.0` and `executer:tui.0`, with legacy `main.0` / `main.1` still supported.
 * **Message contract**: TUIs output **tagged blocks** we can reliably parse and route.
 
 ---
@@ -143,6 +149,10 @@ politerm/
 
 ## 5. Bootstrapping tmux Session
 
+The production workflow uses **`proto/poli_session_wizard.py`** to gather settings (project directory, CLI commands, layout choice), launch dedicated tmux sessions `planner` and `executer` by default, inject primers, and optionally auto-attach macOS Terminal windows. The wizard also supports the legacy single-session split-pane layout for environments without multiple Terminal windows.
+
+For lower-level experiments, we keep the original shell helpers:
+
 **`scripts/bootstrap_tmux.sh`**
 
 ```bash
@@ -180,12 +190,30 @@ echo "tmux ready: -L $SOCKET, session $SESSION (planner pane 0, executer pane 1)
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-tmux -L poli kill-session -t main || true
+
+SOCKET="${POLI_TMUX_SOCKET:-poli}"
+
+if [[ -n "${POLI_TMUX_SESSIONS:-}" ]]; then
+  SESSION_LIST="${POLI_TMUX_SESSIONS}"
+elif [[ -n "${POLI_TMUX_SESSION:-}" ]]; then
+  SESSION_LIST="${POLI_TMUX_SESSION}"
+else
+  SESSION_LIST="main planner executer"
+fi
+
+for SESSION in ${SESSION_LIST//,/ } ; do
+  [[ -z "$SESSION" ]] && continue
+  tmux -L "$SOCKET" kill-session -t "$SESSION" 2>/dev/null || true
+done
+
+tmux -L "$SOCKET" kill-server 2>/dev/null || true
 ```
 
 ---
 
 ## 6. Orchestrator (Runnable Prototype)
+
+Current production orchestrator (`proto/poli_orchestrator_v3.py`) auto-detects whether it should talk to `planner:tui.0` / `executer:tui.0` or the legacy `main.0` / `main.1` panes. The simplified excerpt below illustrates the original single-session approach:
 
 **`proto/poli_orchestrator.py`**
 

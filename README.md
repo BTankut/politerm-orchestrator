@@ -1,6 +1,6 @@
 # PoliTerm Orchestrator 🤖
 
-An intelligent orchestration system that enables continuous dialogue between AI CLI tools (Planner and Executer) using tmux, creating a powerful autonomous task execution environment.
+An intelligent orchestration system that keeps AI CLI tools (Planner and Executer) in continuous dialogue inside tmux-managed terminals, creating a powerful autonomous task execution environment.
 
 ## 🌟 Features
 
@@ -10,22 +10,29 @@ An intelligent orchestration system that enables continuous dialogue between AI 
 - **State Tracking**: Monitors task progress with comprehensive state management
 - **Interrupt Handling**: Graceful shutdown with Ctrl+C
 - **Real CLI Support**: Works with claude, codex, aider, and other AI CLI tools
+- **Flexible tmux Layouts**: Choose between a single tmux window with split panes or dedicated planner/executer tmux sessions (each in its own OS terminal window)
 - **Mock Testing**: Includes mock TUIs for testing without API costs
 
 ## 🏗️ Architecture
 
 ```
-+---------------------+       +---------------------+
-|  tmux session       |       |  Orchestrator (Py)  |
-|---------------------|       |---------------------|
-| [pane 0] PLANNER    |<----->| - send_keys()       |
-|   (e.g., claude)    |  I/O  | - capture_pane()    |
-|   cwd: /project     |       | - parse_blocks()    |
-|---------------------|       | - continuous loop   |
-| [pane 1] EXECUTER   |       +---------------------+
-|   (e.g., codex)     |
-|   cwd: /project     |
-+---------------------+
+tmux socket: poli
+
+┌───────────────┐       ┌──────────────────────┐
+│ session:planner│       │  Orchestrator (Py)   │
+│ window: tui    │<----->│ - send_keys()         │
+│ pane 0: PLANNER│  I/O  │ - capture_tail()      │
+│ cwd: /project  │       │ - parse POLI blocks   │
+└───────────────┘       │ - continuous routing  │
+                        └──────────────────────┘
+┌────────────────┐
+│session:executer │
+│window: tui      │
+│pane 0: EXECUTER │
+│cwd: /project    │
+└────────────────┘
+
+(GUI wizard can alternatively launch a single `main` session with split panes.)
 ```
 
 ## 📋 Prerequisites
@@ -84,8 +91,19 @@ python3 proto/poli_orchestrator_v3.py
 ```
 
 ### 5. Watch the AIs work
+When you choose **separate windows**, the wizard opens two Terminal.app windows automatically. Attach manually if needed:
+
 ```bash
-# In another terminal
+# Planner window
+tmux -L poli attach -t planner
+
+# Executer window
+tmux -L poli attach -t executer
+```
+
+For the classic split-pane layout:
+
+```bash
 tmux -L poli attach -t main
 ```
 
@@ -168,7 +186,7 @@ politerm-orchestrator/
 
 ## 🔄 How It Works
 
-1. **Initialization**: Two AI CLI tools are started in separate tmux panes
+1. **Initialization**: Two AI CLI tools are started as either split panes in one tmux window or as dedicated tmux sessions (default)
 2. **Role Assignment**: Each AI receives a "primer" explaining its role
 3. **Task Submission**: User provides a task through the orchestrator
 4. **Planning Phase**: PLANNER creates a detailed strategy
@@ -185,7 +203,7 @@ Test without using API credits:
 export PLANNER_CMD="python3 $(pwd)/tests/mock_planner.py"
 export EXECUTER_CMD="python3 $(pwd)/tests/mock_executer.py"
 
-# Run test
+# Run test (pane layout for quick smoke)
 bash scripts/bootstrap_tmux_v2.sh
 python3 proto/poli_orchestrator_v3.py --task "Test task"
 ```
@@ -230,6 +248,13 @@ bash scripts/kill_tmux.sh
 tmux -L poli list-sessions
 ```
 
+If the wizard launched separate sessions and you want to inspect them:
+
+```bash
+tmux -L poli attach -t planner
+tmux -L poli attach -t executer
+```
+
 ### API Key Setup
 ```bash
 # For Claude
@@ -244,7 +269,11 @@ export OPENAI_API_KEY="your-key"
 # Check orchestrator logs
 tail -f logs/poli_orchestrator.log
 
-# View tmux panes directly
+# View tmux sessions directly
+tmux -L poli attach -t planner
+tmux -L poli attach -t executer
+
+# Or, for the split layout
 tmux -L poli attach -t main
 ```
 
