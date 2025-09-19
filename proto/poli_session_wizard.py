@@ -260,9 +260,19 @@ def start_tmux_topology(config: SessionConfig, layout: str) -> None:
     time.sleep(2.0)
 
 
+def _sanitize_cli_line(line: str) -> str:
+    s = line
+    stripped = s.lstrip()
+    if stripped.startswith('/'):
+        prefix_len = len(s) - len(stripped)
+        s = s[:prefix_len] + "\u200B/" + stripped[1:]
+    return s
+
+
 def send_lines_to_target(config: SessionConfig, target: str, lines: List[str]) -> None:
     args = tmux_socket_args(config.socket)
-    block = "\n".join(lines).rstrip("\n")
+    sanitized_lines = [_sanitize_cli_line(l) for l in lines]
+    block = "\n".join(sanitized_lines).rstrip("\n")
 
     # For codex-like TUIs, prefer typing with Ctrl-J newlines (avoid -l to allow leading '-')
     prefer_literal = ":executer." in target or target.startswith("executer:")

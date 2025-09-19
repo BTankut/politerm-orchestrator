@@ -95,6 +95,17 @@ if LOG_FILE:
 TMUX = ["tmux", "-L", SOCKET]
 
 
+def _sanitize_cli_line(line: str) -> str:
+    """Avoid leading slash being treated as CLI command; inject zero-width space before '/'.
+    Also safe for lines that start with spaces followed by '/'.
+    """
+    s = line
+    stripped = s.lstrip()
+    if stripped.startswith('/'):
+        prefix_len = len(s) - len(stripped)
+        s = s[:prefix_len] + "\u200B/" + stripped[1:]
+    return s
+
 def session_from_target(target: str) -> str:
     if ":" in target:
         return target.split(":", 1)[0]
@@ -204,7 +215,8 @@ def tmux_exists() -> bool:
 def send_keys(target: str, text: str, with_enter: bool = True) -> None:
     """(Legacy) Send text line-by-line with Enter after each line."""
     logger.info(f"Sending (legacy) to {target}: {text[:100]}{'...' if len(text) > 100 else ''}")
-    for line in text.split("\n"):
+    for raw in text.split("\n"):
+        line = _sanitize_cli_line(raw)
         if line:
             sh(TMUX + ["send-keys", "-t", target, "--", line])
         if with_enter:
@@ -218,7 +230,8 @@ def send_block(target: str, text: str) -> None:
     """
     logger.info(f"Sending block to {target}: {text[:100]}{'...' if len(text) > 100 else ''}")
     lines = text.split("\n")
-    for i, line in enumerate(lines):
+    for i, raw in enumerate(lines):
+        line = _sanitize_cli_line(raw)
         if line:
             sh(TMUX + ["send-keys", "-t", target, "--", line])
         if i < len(lines) - 1:
