@@ -212,15 +212,15 @@ def send_keys(target: str, text: str, with_enter: bool = True) -> None:
 
 
 def send_block(target: str, text: str) -> None:
-    """Type the whole block literally with Ctrl-J between lines, Enter once at the end.
+    """Send a multiline block to TUIs that use Enter=send and Ctrl-J=newline.
 
-    This matches TUIs (like Codex) that interpret Enter as "send" and Ctrl-J as newline.
+    Uses `send-keys -- <line>` to avoid option parsing issues for lines starting with '-'.
     """
     logger.info(f"Sending block to {target}: {text[:100]}{'...' if len(text) > 100 else ''}")
     lines = text.split("\n")
     for i, line in enumerate(lines):
         if line:
-            sh(TMUX + ["send-keys", "-t", target, "-l", line])
+            sh(TMUX + ["send-keys", "-t", target, "--", line])
         if i < len(lines) - 1:
             sh(TMUX + ["send-keys", "-t", target, "C-j"])  # newline inside prompt
         time.sleep(0.01)
