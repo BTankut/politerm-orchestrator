@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# tmux
+tmux-*.log
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local config overrides
+*.local
+*.override
+
+# Session files
+*.session
