@@ -280,7 +280,7 @@ def send_lines_to_target(config: SessionConfig, target: str, lines: List[str]) -
             desc=f"{target}:paste",
             capture=False,
         )
-        time.sleep(0.1)
+        time.sleep(0.15)
 
     run_tmux_command(
         args + ["send-keys", "-t", target, "C-m"],

@@ -68,8 +68,12 @@ sudo apt-get install tmux
 # Navigate to your project directory
 cd /path/to/your/project
 
-# Start PoliTerm with that directory
-python3 proto/poli_session_wizard.py
+# Single-command launch (wizard + orchestrator)
+./scripts/poli_start.sh
+
+# Alternatively, run the components manually
+/opt/homebrew/bin/python3.9 proto/poli_session_wizard.py
+python3 proto/poli_orchestrator_v3.py --monitor
 
 # Legacy shell helper if you prefer bash
 ./start_project.sh

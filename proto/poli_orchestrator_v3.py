@@ -210,8 +210,9 @@ def send_keys(target: str, text: str, with_enter: bool = True) -> None:
         if line:
             sh(TMUX + ["send-keys", "-t", target, "--", line])
         # Architecture specifies C-m for each line
-        if with_enter:
-            sh(TMUX + ["send-keys", "-t", target, "C-m"])
+    if with_enter:
+        sh(TMUX + ["send-keys", "-t", target, "C-m"])
+        time.sleep(0.05)
 
 
 def capture_tail(target: str, lines: int = None) -> str:
