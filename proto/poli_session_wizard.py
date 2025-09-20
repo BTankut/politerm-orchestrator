@@ -181,15 +181,24 @@ def kill_existing_sessions(config: SessionConfig) -> None:
         time.sleep(0.5)
 
 
+def apply_minimal_tmux_ui(args: List[str]) -> None:
+    # Apply minimal UI settings regardless of server startup config
+    run_tmux_command(args + ["set", "-g", "status", "off"], desc="ui:status-off", check=False, capture=False)
+    run_tmux_command(args + ["set", "-g", "mouse", "off"], desc="ui:mouse-off", check=False, capture=False)
+    run_tmux_command(args + ["set", "-g", "prefix", "None"], desc="ui:prefix-none", check=False, capture=False)
+    run_tmux_command(args + ["unbind", "C-b"], desc="ui:unbind-C-b", check=False, capture=False)
+
+
 def start_tmux_topology(config: SessionConfig, layout: str) -> None:
     args = tmux_socket_args(config.socket)
+    tmux_conf = REPO_ROOT / "config" / "tmux_min.conf"
+    conf_args = ["-f", str(tmux_conf)] if tmux_conf.exists() else ["-f", "/dev/null"]
 
     if layout == "split":
         run_tmux_command(
             args
+            + conf_args
             + [
-                "-f",
-                "/dev/null",
                 "new-session",
                 "-d",
                 "-s",
@@ -230,9 +239,8 @@ def start_tmux_topology(config: SessionConfig, layout: str) -> None:
         ):
             run_tmux_command(
                 args
+                + conf_args
                 + [
-                    "-f",
-                    "/dev/null",
                     "new-session",
                     "-d",
                     "-s",
@@ -257,6 +265,8 @@ def start_tmux_topology(config: SessionConfig, layout: str) -> None:
                 desc=f"{role}-start",
             )
 
+    # Apply minimal UI settings at server level too (in case server already existed)
+    apply_minimal_tmux_ui(args)
     time.sleep(2.0)
 
 
