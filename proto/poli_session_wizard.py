@@ -57,6 +57,7 @@ PRIMER_DELAY = float(os.environ.get("POLI_PRIMER_DELAY", "3.0"))
 READY_TIMEOUT = float(os.environ.get("POLI_READY_TIMEOUT", "12.0"))
 READY_IDLE = float(os.environ.get("POLI_READY_IDLE", "2.0"))
 PANE_LOG = os.environ.get("POLI_PANE_LOG", "").lower() in ("1", "true", "on")
+AUTO_INJECT_DEFAULT = os.environ.get("POLI_AUTO_INJECT", "0").lower() in ("1", "true", "on")
 
 CUSTOM_LABEL = "Custom command"
 
@@ -87,6 +88,7 @@ class SessionConfig:
     planner_session: str = DEFAULT_PLANNER_SESSION
     executer_session: str = DEFAULT_EXECUTER_SESSION
     window_name: str = DEFAULT_ROLE_WINDOW
+    auto_inject: bool = AUTO_INJECT_DEFAULT
 
     @property
     def planner_cwd(self) -> Path:
@@ -341,6 +343,7 @@ def persist_session(config: SessionConfig, debug_tmux: bool, auto_attach: bool, 
         "planner_session": config.planner_session,
         "executer_session": config.executer_session,
         "window_name": config.window_name,
+        "auto_inject": bool(config.auto_inject),
         "debug_tmux": bool(debug_tmux),
         "auto_attach": bool(auto_attach),
         "layout": layout,
@@ -354,6 +357,7 @@ def load_previous_session() -> Tuple[Optional[SessionConfig], Dict[str, object]]
         "debug_tmux": DEBUG_TMUX,
         "auto_attach": AUTO_ATTACH,
         "layout": "split",
+        "auto_inject": AUTO_INJECT_DEFAULT,
     }
     if not SESSION_STATE_FILE.exists():
         return None, prefs
@@ -368,10 +372,12 @@ def load_previous_session() -> Tuple[Optional[SessionConfig], Dict[str, object]]
             planner_session=data.get("planner_session", DEFAULT_PLANNER_SESSION),
             executer_session=data.get("executer_session", DEFAULT_EXECUTER_SESSION),
             window_name=data.get("window_name", DEFAULT_ROLE_WINDOW),
+            auto_inject=bool(data.get("auto_inject", AUTO_INJECT_DEFAULT)),
         )
         prefs["debug_tmux"] = bool(data.get("debug_tmux", prefs["debug_tmux"]))
         prefs["auto_attach"] = bool(data.get("auto_attach", prefs["auto_attach"]))
         prefs["layout"] = data.get("layout", prefs["layout"])
+        prefs["auto_inject"] = bool(data.get("auto_inject", prefs["auto_inject"]))
         return config, prefs
     except Exception:
         return None, prefs
@@ -620,6 +626,7 @@ def launch_gui(
     executer_command_var = tk.StringVar()
     debug_var = tk.BooleanVar(value=bool(prefs["debug_tmux"]))
     attach_var = tk.BooleanVar(value=bool(prefs["auto_attach"]))
+    auto_inject_var = tk.BooleanVar(value=bool(prefs.get("auto_inject", AUTO_INJECT_DEFAULT)))
     layout_default = str(prefs["layout"]) if str(prefs["layout"]) in ("split", "windows") else "split"
 
     result: Dict[str, object] = {
@@ -680,6 +687,9 @@ def launch_gui(
     ttk.Checkbutton(options_frame, text="Auto attach tmux", variable=attach_var).grid(
         row=1, column=0, sticky="w", padx=8, pady=(0, 6)
     )
+    ttk.Checkbutton(options_frame, text="Auto-inject primers", variable=auto_inject_var).grid(
+        row=2, column=0, sticky="w", padx=8, pady=(0, 8)
+    )
 
     layout_frame = ttk.LabelFrame(main_frame, text="Layout")
     layout_frame.grid(row=11, column=0, columnspan=3, pady=(12, 0), sticky="we")
@@ -737,6 +747,9 @@ def launch_gui(
         result["debug"] = bool(debug_var.get())
         result["attach"] = bool(attach_var.get())
         result["layout"] = layout_var.get()
+        # store auto_inject signal inside the config
+        result_config: SessionConfig = result["config"]  # type: ignore
+        result_config.auto_inject = bool(auto_inject_var.get())
         root.destroy()
 
     ttk.Button(buttons, text="Start", command=on_start).pack(side="right")
@@ -892,20 +905,58 @@ def orchestrate(
         )
     except Exception:
         pass
-    planner_lines = load_primer_lines("planner")
-    executer_lines = load_primer_lines("executer")
-    print("Injecting primers...")
-    if layout == "split":
-        planner_target = f"{config.session}.0"
-        executer_target = f"{config.session}.1"
-    else:
-        planner_target = f"{config.planner_session}:{config.window_name}.0"
-        executer_target = f"{config.executer_session}:{config.window_name}.0"
+    if config.auto_inject:
+        planner_lines = load_primer_lines("planner")
+        executer_lines = load_primer_lines("executer")
+        print("Injecting primers...")
+        if layout == "split":
+            planner_target = f"{config.session}.0"
+            executer_target = f"{config.session}.1"
+        else:
+            planner_target = f"{config.planner_session}:{config.window_name}.0"
+            executer_target = f"{config.executer_session}:{config.window_name}.0"
 
-    send_lines_to_target(config, planner_target, planner_lines)
-    send_lines_to_target(config, executer_target, executer_lines)
+        send_lines_to_target(config, planner_target, planner_lines)
+        send_lines_to_target(config, executer_target, executer_lines)
+    else:
+        print("Auto-inject disabled. You can inject primers later from the control dialog or via CLI.")
     persist_session(config, debug_tmux, auto_attach, layout)
     attach_tmux_sessions(config, auto_attach, layout)
+
+    # If auto-inject is off and Tk is available, show a small control to trigger injection on demand
+    if not config.auto_inject and tk is not None and ttk is not None:
+        try:
+            inj_root = tk.Tk()
+            inj_root.title("Primer Control")
+            inj_root.geometry("360x140")
+            frm = ttk.Frame(inj_root, padding=12)
+            frm.pack(fill="both", expand=True)
+            msg = tk.StringVar(value="Primers are ready. Inject when TUIs are idle.")
+            ttk.Label(frm, textvariable=msg, wraplength=320).pack(anchor="w")
+
+            def do_inject() -> None:
+                try:
+                    planners = load_primer_lines("planner")
+                    executers = load_primer_lines("executer")
+                    if layout == "split":
+                        p_t = f"{config.session}.0"
+                        e_t = f"{config.session}.1"
+                    else:
+                        p_t = f"{config.planner_session}:{config.window_name}.0"
+                        e_t = f"{config.executer_session}:{config.window_name}.0"
+                    send_lines_to_target(config, p_t, planners)
+                    send_lines_to_target(config, e_t, executers)
+                    msg.set("Primers injected successfully.")
+                except Exception as ex:
+                    msg.set(f"Injection failed: {ex}")
+
+            btns = ttk.Frame(frm)
+            btns.pack(fill="x", pady=(10, 0))
+            ttk.Button(btns, text="Inject Primers Now", command=do_inject).pack(side="left")
+            ttk.Button(btns, text="Close", command=inj_root.destroy).pack(side="right")
+            inj_root.mainloop()
+        except Exception:
+            pass
     if layout == "split":
         followup = "  - Continue working with the PLANNER pane.\n"
     else:
@@ -928,6 +979,9 @@ def main() -> int:
     parser.add_argument("--debug-tmux", action="store_true", help="Force tmux command logging")
     parser.add_argument("--no-debug", action="store_true", help="Disable tmux command logging")
     parser.add_argument("--primer-delay", type=float, help="Delay before primer injection (seconds)")
+    parser.add_argument("--auto-inject", dest="auto_inject", action="store_true", help="Auto-inject primers after readiness checks")
+    parser.add_argument("--no-auto-inject", dest="auto_inject", action="store_false", help="Do not auto-inject primers; user will inject manually")
+    parser.set_defaults(auto_inject=AUTO_INJECT_DEFAULT)
 
     args = parser.parse_args()
 
@@ -970,6 +1024,9 @@ def main() -> int:
 
     DEBUG_TMUX = debug_choice
     AUTO_ATTACH = attach_choice
+    # apply CLI auto-inject override
+    if hasattr(args, 'auto_inject'):
+        config.auto_inject = bool(getattr(args, 'auto_inject'))
 
     try:
         orchestrate(config, DEBUG_TMUX, AUTO_ATTACH, layout_choice)
