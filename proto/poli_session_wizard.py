@@ -53,7 +53,7 @@ SESSION_STATE_FILE = CONFIG_DIR / "last_session.json"
 DEBUG_TMUX = os.environ.get("POLI_WIZARD_DEBUG", "1").lower() not in ("0", "false", "no")
 AUTO_ATTACH = os.environ.get("POLI_WIZARD_ATTACH", "1").lower() not in ("0", "false", "no")
 INSIDE_TMUX = bool(os.environ.get("TMUX"))
-PRIMER_DELAY = float(os.environ.get("POLI_PRIMER_DELAY", "3.0"))
+PRIMER_DELAY = float(os.environ.get("POLI_PRIMER_DELAY", "0.0"))
 READY_TIMEOUT = float(os.environ.get("POLI_READY_TIMEOUT", "12.0"))
 READY_IDLE = float(os.environ.get("POLI_READY_IDLE", "2.0"))
 PANE_LOG = os.environ.get("POLI_PANE_LOG", "").lower() in ("1", "true", "on")
@@ -257,45 +257,20 @@ def start_tmux_topology(config: SessionConfig, layout: str) -> None:
 
 def start_cli_commands(config: SessionConfig, layout: str) -> None:
     args = tmux_socket_args(config.socket)
-    # Use send-keys once per pane to start CLI after windows attach, to avoid banner double-draw
+    # Launch using tmux respawn-pane to replace the pane process cleanly (claunch-style)
+    def respawn(target: str, cwd: str, cmd: str, label: str) -> None:
+        run_tmux_command(
+            args + ["respawn-pane", "-k", "-t", target, "-c", cwd, cmd],
+            desc=f"{label}:respawn",
+            capture=False,
+        )
+
     if layout == "split":
-        run_tmux_command(
-            args + ["send-keys", "-t", f"{config.session}.0", "--", config.planner_cmd, "C-m"],
-            desc="planner:launch",
-            capture=False,
-        )
-        run_tmux_command(
-            args + ["send-keys", "-t", f"{config.session}.1", "--", config.executer_cmd, "C-m"],
-            desc="executer:launch",
-            capture=False,
-        )
+        respawn(f"{config.session}.0", str(config.planner_cwd), config.planner_cmd, "planner")
+        respawn(f"{config.session}.1", str(config.executer_cwd), config.executer_cmd, "executer")
     else:
-        run_tmux_command(
-            args
-            + [
-                "send-keys",
-                "-t",
-                f"{config.planner_session}:{config.window_name}.0",
-                "--",
-                config.planner_cmd,
-                "C-m",
-            ],
-            desc="planner:launch",
-            capture=False,
-        )
-        run_tmux_command(
-            args
-            + [
-                "send-keys",
-                "-t",
-                f"{config.executer_session}:{config.window_name}.0",
-                "--",
-                config.executer_cmd,
-                "C-m",
-            ],
-            desc="executer:launch",
-            capture=False,
-        )
+        respawn(f"{config.planner_session}:{config.window_name}.0", str(config.planner_cwd), config.planner_cmd, "planner")
+        respawn(f"{config.executer_session}:{config.window_name}.0", str(config.executer_cwd), config.executer_cmd, "executer")
 
 
 def _sanitize_cli_line(line: str) -> str:
