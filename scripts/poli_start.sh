@@ -47,7 +47,9 @@ fi
 printf '\n>>> Wizard finished. Starting orchestrator monitor using %s\n' "$ORCH_PYTHON"
 
 # Optional: turn on pane logging now (if requested) and auto-disable after duration
-if [[ "${POLI_PANE_LOG,,}" == "on" || "${POLI_PANE_LOG,,}" == "true" || "${POLI_PANE_LOG}" == "1" ]]; then
+PANE_LOG_VAL="${POLI_PANE_LOG:-}"
+PANE_LOG_LC="$(printf '%s' "$PANE_LOG_VAL" | tr '[:upper:]' '[:lower:]')"
+if [[ "$PANE_LOG_LC" == "on" || "$PANE_LOG_LC" == "true" || "$PANE_LOG_LC" == "1" ]]; then
   if [[ -x "$REPO_ROOT/scripts/tmux_logs.sh" ]]; then
     "$REPO_ROOT/scripts/tmux_logs.sh" on || true
     if [[ -n "${POLI_PANE_LOG_DURATION:-}" ]]; then
