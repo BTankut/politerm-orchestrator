@@ -54,6 +54,7 @@ DEBUG_TMUX = os.environ.get("POLI_WIZARD_DEBUG", "1").lower() not in ("0", "fals
 AUTO_ATTACH = os.environ.get("POLI_WIZARD_ATTACH", "1").lower() not in ("0", "false", "no")
 INSIDE_TMUX = bool(os.environ.get("TMUX"))
 PRIMER_DELAY = float(os.environ.get("POLI_PRIMER_DELAY", "3.0"))
+READY_TIMEOUT = float(os.environ.get("POLI_READY_TIMEOUT", "8.0"))
 
 CUSTOM_LABEL = "Custom command"
 
@@ -821,8 +822,42 @@ def orchestrate(
     kill_existing_sessions(config)
     start_tmux_topology(config, layout)
     if PRIMER_DELAY > 0:
-        print(f"Waiting {PRIMER_DELAY:.1f}s for TUIs to settle...")
+        print(f"Waiting {PRIMER_DELAY:.1f}s for TUIs to start...")
         time.sleep(PRIMER_DELAY)
+
+    # Heuristic readiness checks to avoid racing with CLI self-initialization
+    def wait_ready(target: str, patterns: List[str], timeout: float = READY_TIMEOUT) -> None:
+        start = time.time()
+        args = tmux_socket_args(config.socket)
+        while time.time() - start < timeout:
+            out = run_tmux_command(
+                args + ["capture-pane", "-t", target, "-pJS", "-120"],
+                check=False,
+                capture=True,
+            ).stdout or ""
+            if any(pat in out for pat in patterns):
+                return
+            time.sleep(0.2)
+
+    try:
+        print("Checking PLANNER readiness...")
+        wait_ready(
+            f"{config.planner_session}:{config.window_name}.0" if layout != "split" else f"{config.session}.0",
+            patterns=["Welcome to Claude Code", "? for shortcuts", "cwd:"],
+            timeout=READY_TIMEOUT,
+        )
+    except Exception:
+        pass
+
+    try:
+        print("Checking EXECUTER readiness...")
+        wait_ready(
+            f"{config.executer_session}:{config.window_name}.0" if layout != "split" else f"{config.session}.1",
+            patterns=["OpenAI Codex", "directory:"],
+            timeout=READY_TIMEOUT,
+        )
+    except Exception:
+        pass
     planner_lines = load_primer_lines("planner")
     executer_lines = load_primer_lines("executer")
     print("Injecting primers...")

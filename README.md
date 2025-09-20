@@ -84,6 +84,7 @@ python3 proto/poli_orchestrator_v3.py --monitor
   - Executer: `codex`, `codex resume --last`, `codex resume --yolo`, `codex resume --last --yolo`
 - You can enter custom commands and toggle tmux logging/auto-attach and choose pane layout (split panes vs separate windows).
 - Without a display you can fall back to the text wizard via `python3 proto/poli_session_wizard.py --cli`.
+  - Primer injection waits a configurable delay and checks CLI readiness to avoid racing with startup banners. Tune with `POLI_PRIMER_DELAY` (default 3s) and `POLI_READY_TIMEOUT` (default 8s).
 
 ### 4. Run a task
 ```bash
