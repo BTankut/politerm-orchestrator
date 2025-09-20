@@ -411,22 +411,61 @@ def attach_tmux_sessions(config: SessionConfig, auto_attach: bool, layout: str) 
         return
 
     if sys.platform == "darwin":
-        applescript = f"""
-tell application "Terminal"
-  do script "tmux -L {config.socket} attach -t {config.planner_session}"
-  delay 0.3
-  do script "tmux -L {config.socket} attach -t {config.executer_session}"
+        preferred = os.environ.get("POLI_TERMINAL", "auto").lower()
+        socket = config.socket
+        planner = config.planner_session
+        executer = config.executer_session
+
+        def try_iterm() -> bool:
+            iterm_script = f"""
+tell application "iTerm"
+  create window with default profile
+  tell current session of current window to write text "tmux -L {socket} attach -t {planner}"
+  tell current session of current window to write text "printf '\\e]1;PLANNER\\a\\e]2;PLANNER\\a'"
+  delay 0.2
+  create window with default profile
+  tell current session of current window to write text "tmux -L {socket} attach -t {executer}"
+  tell current session of current window to write text "printf '\\e]1;EXECUTER\\a\\e]2;EXECUTER\\a'"
   activate
 end tell
 """
-        try:
-            subprocess.run(["osascript"], input=applescript, text=True, check=True)
-            print(
-                "\nAttaching via Terminal.app (two windows). Detach with Ctrl-b then d in each window."
-            )
+            try:
+                subprocess.run(["osascript"], input=iterm_script, text=True, check=True)
+                print("\niTerm windows opened for PLANNER and EXECUTER.")
+                return True
+            except subprocess.CalledProcessError:
+                return False
+
+        def try_terminal() -> bool:
+            term_script = f"""
+tell application "Terminal"
+  set w1 to do script "tmux -L {socket} attach -t {planner}"
+  delay 0.2
+  do script "printf '\\e]1;PLANNER\\a\\e]2;PLANNER\\a'" in w1
+  delay 0.2
+  set w2 to do script "tmux -L {socket} attach -t {executer}"
+  delay 0.2
+  do script "printf '\\e]1;EXECUTER\\a\\e]2;EXECUTER\\a'" in w2
+  activate
+end tell
+"""
+            try:
+                subprocess.run(["osascript"], input=term_script, text=True, check=True)
+                print("\nTerminal.app windows opened for PLANNER and EXECUTER.")
+                return True
+            except subprocess.CalledProcessError:
+                return False
+
+        used = False
+        if preferred in ("auto", "iterm"):
+            used = try_iterm()
+        if not used and preferred in ("auto", "terminal"):
+            used = try_terminal()
+        if used:
+            print("Detach with Ctrl-b then d if needed; tmux UI is minimized.")
             return
-        except subprocess.CalledProcessError:
-            print("⚠️  Failed to attach via Terminal.app. Falling back to manual instructions.")
+        else:
+            print("⚠️  Failed to open macOS terminal windows. Falling back to manual instructions.")
 
     print("\nTmux sessions ready. Attach manually:")
     print(f"  tmux -L {config.socket} attach -t {config.planner_session}")
