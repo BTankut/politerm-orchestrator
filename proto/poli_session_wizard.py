@@ -54,7 +54,8 @@ DEBUG_TMUX = os.environ.get("POLI_WIZARD_DEBUG", "1").lower() not in ("0", "fals
 AUTO_ATTACH = os.environ.get("POLI_WIZARD_ATTACH", "1").lower() not in ("0", "false", "no")
 INSIDE_TMUX = bool(os.environ.get("TMUX"))
 PRIMER_DELAY = float(os.environ.get("POLI_PRIMER_DELAY", "3.0"))
-READY_TIMEOUT = float(os.environ.get("POLI_READY_TIMEOUT", "8.0"))
+READY_TIMEOUT = float(os.environ.get("POLI_READY_TIMEOUT", "10.0"))
+READY_IDLE = float(os.environ.get("POLI_READY_IDLE", "1.0"))
 
 CUSTOM_LABEL = "Custom command"
 
@@ -829,13 +830,24 @@ def orchestrate(
     def wait_ready(target: str, patterns: List[str], timeout: float = READY_TIMEOUT) -> None:
         start = time.time()
         args = tmux_socket_args(config.socket)
+        last = None
+        last_change = time.time()
         while time.time() - start < timeout:
             out = run_tmux_command(
                 args + ["capture-pane", "-t", target, "-pJS", "-120"],
                 check=False,
                 capture=True,
             ).stdout or ""
-            if any(pat in out for pat in patterns):
+            if out != last:
+                last = out
+                last_change = time.time()
+
+            has_prompt = any(pat in out for pat in patterns)
+            looks_idle = (
+                (">" in out.splitlines()[-1:][0] if out.splitlines() else False)
+                and ("Wandering" not in out)
+            )
+            if has_prompt and looks_idle and (time.time() - last_change) >= READY_IDLE:
                 return
             time.sleep(0.2)
 
