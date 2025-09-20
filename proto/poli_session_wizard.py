@@ -199,10 +199,9 @@ def start_tmux_topology(config: SessionConfig, layout: str) -> None:
     args = tmux_socket_args(config.socket)
     tmux_conf = REPO_ROOT / "config" / "tmux_min.conf"
     conf_args = ["-f", str(tmux_conf)] if tmux_conf.exists() else ["-f", "/dev/null"]
-    shell = os.environ.get("SHELL", "/bin/bash")
+    # Only create sessions/panes here; do NOT start CLIs yet to avoid double-draw banners
 
     if layout == "split":
-        # Start planner with command at session creation
         run_tmux_command(
             args
             + conf_args
@@ -213,14 +212,10 @@ def start_tmux_topology(config: SessionConfig, layout: str) -> None:
                 config.session,
                 "-c",
                 str(config.planner_cwd),
-                shell,
-                "-lc",
-                config.planner_cmd,
             ],
-            desc="new-session:main+planner",
+            desc="new-session:main",
         )
 
-        # Split and start executer with its command directly
         run_tmux_command(
             args
             + [
@@ -230,11 +225,8 @@ def start_tmux_topology(config: SessionConfig, layout: str) -> None:
                 config.session,
                 "-c",
                 str(config.executer_cwd),
-                shell,
-                "-lc",
-                config.executer_cmd,
             ],
-            desc="split-window+executer",
+            desc="split-window",
         )
     else:
         for role, session_name, cwd, cmd in (
@@ -253,9 +245,6 @@ def start_tmux_topology(config: SessionConfig, layout: str) -> None:
                     config.window_name,
                     "-c",
                     str(cwd),
-                    shell,
-                    "-lc",
-                    cmd,
                 ],
                 desc=f"new-session:{role}",
             )
@@ -264,6 +253,49 @@ def start_tmux_topology(config: SessionConfig, layout: str) -> None:
     apply_minimal_tmux_ui(args)
     # Minimal settle for tmux server; full primer delay is applied in orchestrate()
     time.sleep(0.5)
+
+
+def start_cli_commands(config: SessionConfig, layout: str) -> None:
+    args = tmux_socket_args(config.socket)
+    # Use send-keys once per pane to start CLI after windows attach, to avoid banner double-draw
+    if layout == "split":
+        run_tmux_command(
+            args + ["send-keys", "-t", f"{config.session}.0", "--", config.planner_cmd, "C-m"],
+            desc="planner:launch",
+            capture=False,
+        )
+        run_tmux_command(
+            args + ["send-keys", "-t", f"{config.session}.1", "--", config.executer_cmd, "C-m"],
+            desc="executer:launch",
+            capture=False,
+        )
+    else:
+        run_tmux_command(
+            args
+            + [
+                "send-keys",
+                "-t",
+                f"{config.planner_session}:{config.window_name}.0",
+                "--",
+                config.planner_cmd,
+                "C-m",
+            ],
+            desc="planner:launch",
+            capture=False,
+        )
+        run_tmux_command(
+            args
+            + [
+                "send-keys",
+                "-t",
+                f"{config.executer_session}:{config.window_name}.0",
+                "--",
+                config.executer_cmd,
+                "C-m",
+            ],
+            desc="executer:launch",
+            capture=False,
+        )
 
 
 def _sanitize_cli_line(line: str) -> str:
@@ -854,6 +886,11 @@ def orchestrate(
             )
         except Exception:
             pass
+    attach_tmux_sessions(config, auto_attach, layout)
+
+    # Start CLI commands after attach to avoid double-draw of banners
+    start_cli_commands(config, layout)
+
     if PRIMER_DELAY > 0:
         print(f"Waiting {PRIMER_DELAY:.1f}s for TUIs to start...")
         time.sleep(PRIMER_DELAY)
@@ -921,8 +958,6 @@ def orchestrate(
     else:
         print("Auto-inject disabled. You can inject primers later from the control dialog or via CLI.")
     persist_session(config, debug_tmux, auto_attach, layout)
-    attach_tmux_sessions(config, auto_attach, layout)
-
     # If auto-inject is off and Tk is available, show a small control to trigger injection on demand
     if not config.auto_inject and tk is not None and ttk is not None:
         try:
