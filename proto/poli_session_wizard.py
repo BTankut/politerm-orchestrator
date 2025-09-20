@@ -54,8 +54,8 @@ DEBUG_TMUX = os.environ.get("POLI_WIZARD_DEBUG", "1").lower() not in ("0", "fals
 AUTO_ATTACH = os.environ.get("POLI_WIZARD_ATTACH", "1").lower() not in ("0", "false", "no")
 INSIDE_TMUX = bool(os.environ.get("TMUX"))
 PRIMER_DELAY = float(os.environ.get("POLI_PRIMER_DELAY", "3.0"))
-READY_TIMEOUT = float(os.environ.get("POLI_READY_TIMEOUT", "10.0"))
-READY_IDLE = float(os.environ.get("POLI_READY_IDLE", "1.0"))
+READY_TIMEOUT = float(os.environ.get("POLI_READY_TIMEOUT", "12.0"))
+READY_IDLE = float(os.environ.get("POLI_READY_IDLE", "2.0"))
 PANE_LOG = os.environ.get("POLI_PANE_LOG", "").lower() in ("1", "true", "on")
 
 CUSTOM_LABEL = "Custom command"
@@ -278,24 +278,24 @@ def send_lines_to_target(config: SessionConfig, target: str, lines: List[str]) -
     sanitized_lines = [_sanitize_cli_line(l) for l in lines]
     block = "\n".join(sanitized_lines).rstrip("\n")
 
-    # For codex-like TUIs, prefer typing with Ctrl-J newlines (avoid -l to allow leading '-')
-    prefer_literal = ":executer." in target or target.startswith("executer:")
+    # For executer, prefer bracketed paste so the CLI treats it as a single block
+    is_executer = ":executer." in target or target.startswith("executer:")
 
-    if prefer_literal:
-        for i, line in enumerate(block.split("\n")):
-            if line:
-                run_tmux_command(
-                    args + ["send-keys", "-t", target, "--", line],
-                    desc=f"{target}:type",
-                    capture=False,
-                )
-            if i < len(block.split("\n")) - 1:
-                run_tmux_command(
-                    args + ["send-keys", "-t", target, "C-j"],
-                    desc=f"{target}:newline",
-                    capture=False,
-                )
-                time.sleep(0.02)
+    if is_executer and block:
+        bpaste = "\x1b[200~" + block + "\x1b[201~"
+        run_tmux_command(
+            args + ["load-buffer", "-"],
+            desc=f"{target}:load-bpaste",
+            capture=False,
+            stdin=bpaste,
+        )
+        time.sleep(0.05)
+        run_tmux_command(
+            args + ["paste-buffer", "-d", "-t", target],
+            desc=f"{target}:paste-bpaste",
+            capture=False,
+        )
+        time.sleep(0.05)
         run_tmux_command(
             args + ["send-keys", "-t", target, "C-m"],
             desc=f"{target}:send",
@@ -861,12 +861,15 @@ def orchestrate(
                 last = out
                 last_change = time.time()
 
+            lower = out.lower()
+            transient = ("spinning" in lower) or ("wandering" in lower) or ("tip:" in lower)
             has_prompt = any(pat in out for pat in patterns)
             looks_idle = (
                 (">" in out.splitlines()[-1:][0] if out.splitlines() else False)
-                and ("Wandering" not in out)
+                and not transient
             )
-            if has_prompt and looks_idle and (time.time() - last_change) >= READY_IDLE:
+            stable_enough = (time.time() - last_change) >= READY_IDLE
+            if has_prompt and looks_idle and stable_enough:
                 return
             time.sleep(0.2)
 

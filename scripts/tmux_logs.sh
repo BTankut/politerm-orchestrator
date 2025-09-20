@@ -19,12 +19,14 @@ if [[ "$cmd" != "on" && "$cmd" != "off" ]]; then
 fi
 
 if [[ "$cmd" == "on" ]]; then
+  # ANSI/CSI cleaner using perl (portable on macOS/Linux)
+  CLEANER="perl -pe 's/\e\[[0-9;]*[A-Za-z]//g'"
   if command -v ts >/dev/null 2>&1; then
-    CMD_P="ts >> $LOG_DIR/planner_pane.log"
-    CMD_E="ts >> $LOG_DIR/executer_pane.log"
+    CMD_P="$CLEANER | ts >> $LOG_DIR/planner_pane.log"
+    CMD_E="$CLEANER | ts >> $LOG_DIR/executer_pane.log"
   else
-    CMD_P=">> $LOG_DIR/planner_pane.log cat"
-    CMD_E=">> $LOG_DIR/executer_pane.log cat"
+    CMD_P="$CLEANER >> $LOG_DIR/planner_pane.log"
+    CMD_E="$CLEANER >> $LOG_DIR/executer_pane.log"
   fi
   tmux -L "$SOCKET" pipe-pane -o -t "$PLANNER_TARGET" "$CMD_P"
   tmux -L "$SOCKET" pipe-pane -o -t "$EXECUTER_TARGET" "$CMD_E"
