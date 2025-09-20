@@ -196,8 +196,10 @@ def start_tmux_topology(config: SessionConfig, layout: str) -> None:
     args = tmux_socket_args(config.socket)
     tmux_conf = REPO_ROOT / "config" / "tmux_min.conf"
     conf_args = ["-f", str(tmux_conf)] if tmux_conf.exists() else ["-f", "/dev/null"]
+    shell = os.environ.get("SHELL", "/bin/bash")
 
     if layout == "split":
+        # Start planner with command at session creation
         run_tmux_command(
             args
             + conf_args
@@ -208,16 +210,14 @@ def start_tmux_topology(config: SessionConfig, layout: str) -> None:
                 config.session,
                 "-c",
                 str(config.planner_cwd),
+                shell,
+                "-lc",
+                config.planner_cmd,
             ],
-            desc="new-session:main",
+            desc="new-session:main+planner",
         )
 
-        run_tmux_command(
-            args
-            + ["send-keys", "-t", f"{config.session}.0", "--", config.planner_cmd, "C-m"],
-            desc="planner-start",
-        )
-
+        # Split and start executer with its command directly
         run_tmux_command(
             args
             + [
@@ -227,13 +227,11 @@ def start_tmux_topology(config: SessionConfig, layout: str) -> None:
                 config.session,
                 "-c",
                 str(config.executer_cwd),
+                shell,
+                "-lc",
+                config.executer_cmd,
             ],
-            desc="split-window",
-        )
-        run_tmux_command(
-            args
-            + ["send-keys", "-t", f"{config.session}.1", "--", config.executer_cmd, "C-m"],
-            desc="executer-start",
+            desc="split-window+executer",
         )
     else:
         for role, session_name, cwd, cmd in (
@@ -252,6 +250,9 @@ def start_tmux_topology(config: SessionConfig, layout: str) -> None:
                     config.window_name,
                     "-c",
                     str(cwd),
+                    shell,
+                    "-lc",
+                    cmd,
                 ],
                 desc=f"new-session:{role}",
             )
