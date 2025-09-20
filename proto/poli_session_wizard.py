@@ -56,6 +56,7 @@ INSIDE_TMUX = bool(os.environ.get("TMUX"))
 PRIMER_DELAY = float(os.environ.get("POLI_PRIMER_DELAY", "3.0"))
 READY_TIMEOUT = float(os.environ.get("POLI_READY_TIMEOUT", "10.0"))
 READY_IDLE = float(os.environ.get("POLI_READY_IDLE", "1.0"))
+PANE_LOG = os.environ.get("POLI_PANE_LOG", "").lower() in ("1", "true", "on")
 
 CUSTOM_LABEL = "Custom command"
 
@@ -811,6 +812,31 @@ def orchestrate(
     config.project_dir.mkdir(parents=True, exist_ok=True)
     kill_existing_sessions(config)
     start_tmux_topology(config, layout)
+    # Optional: enable tmux pane logging as early as panes exist
+    if PANE_LOG:
+        try:
+            args = tmux_socket_args(config.socket)
+            if layout == "split":
+                planner_target = f"{config.session}.0"
+                executer_target = f"{config.session}.1"
+            else:
+                planner_target = f"{config.planner_session}:{config.window_name}.0"
+                executer_target = f"{config.executer_session}:{config.window_name}.0"
+            LOG_DIR.mkdir(exist_ok=True)
+            run_tmux_command(
+                args + ["pipe-pane", "-o", "-t", planner_target, f"ts >> {str(LOG_DIR / 'planner_pane.log')}"],
+                check=False,
+                capture=False,
+                desc="log:planner:on",
+            )
+            run_tmux_command(
+                args + ["pipe-pane", "-o", "-t", executer_target, f"ts >> {str(LOG_DIR / 'executer_pane.log')}"],
+                check=False,
+                capture=False,
+                desc="log:executer:on",
+            )
+        except Exception:
+            pass
     if PRIMER_DELAY > 0:
         print(f"Waiting {PRIMER_DELAY:.1f}s for TUIs to start...")
         time.sleep(PRIMER_DELAY)

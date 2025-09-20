@@ -35,12 +35,26 @@ if [[ ! -f "$ORCH_PATH" ]]; then
 fi
 
 printf '>>> Launching PoliTerm wizard using %s\n' "$WIZARD_PYTHON"
+# Optionally enable early tmux pane logging inside the wizard via env
+export POLI_PANE_LOG="${POLI_PANE_LOG:-}"
+export POLI_PANE_LOG_DURATION="${POLI_PANE_LOG_DURATION:-}"
+
 if ! "$WIZARD_PYTHON" "$WIZARD_PATH" "$@"; then
   echo "Wizard exited with non-zero status. Aborting orchestrator startup." >&2
   exit 1
 fi
 
 printf '\n>>> Wizard finished. Starting orchestrator monitor using %s\n' "$ORCH_PYTHON"
+
+# Optional: turn on pane logging now (if requested) and auto-disable after duration
+if [[ "${POLI_PANE_LOG,,}" == "on" || "${POLI_PANE_LOG,,}" == "true" || "${POLI_PANE_LOG}" == "1" ]]; then
+  if [[ -x "$REPO_ROOT/scripts/tmux_logs.sh" ]]; then
+    "$REPO_ROOT/scripts/tmux_logs.sh" on || true
+    if [[ -n "${POLI_PANE_LOG_DURATION:-}" ]]; then
+      ( sleep "${POLI_PANE_LOG_DURATION}"; "$REPO_ROOT/scripts/tmux_logs.sh" off ) >/dev/null 2>&1 & disown || true
+    fi
+  fi
+fi
 
 start_orchestrator_current_shell() {
   cd "$REPO_ROOT"
