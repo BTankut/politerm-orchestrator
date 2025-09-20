@@ -419,13 +419,11 @@ def attach_tmux_sessions(config: SessionConfig, auto_attach: bool, layout: str) 
         def try_iterm() -> bool:
             iterm_script = f"""
 tell application "iTerm"
-  create window with default profile
-  tell current session of current window to write text "tmux -L {socket} attach -t {planner}"
-  tell current session of current window to write text "printf '\\e]1;PLANNER\\a\\e]2;PLANNER\\a'"
+  set win1 to (create window with default profile)
+  tell current session of win1 to write text "tmux -L {socket} attach -t {planner}"
   delay 0.2
-  create window with default profile
-  tell current session of current window to write text "tmux -L {socket} attach -t {executer}"
-  tell current session of current window to write text "printf '\\e]1;EXECUTER\\a\\e]2;EXECUTER\\a'"
+  set win2 to (create window with default profile)
+  tell current session of win2 to write text "tmux -L {socket} attach -t {executer}"
   activate
 end tell
 """
@@ -439,13 +437,9 @@ end tell
         def try_terminal() -> bool:
             term_script = f"""
 tell application "Terminal"
-  set w1 to do script "tmux -L {socket} attach -t {planner}"
+  do script "tmux -L {socket} attach -t {planner}"
   delay 0.2
-  do script "printf '\\e]1;PLANNER\\a\\e]2;PLANNER\\a'" in w1
-  delay 0.2
-  set w2 to do script "tmux -L {socket} attach -t {executer}"
-  delay 0.2
-  do script "printf '\\e]1;EXECUTER\\a\\e]2;EXECUTER\\a'" in w2
+  do script "tmux -L {socket} attach -t {executer}"
   activate
 end tell
 """
