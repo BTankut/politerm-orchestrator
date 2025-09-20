@@ -256,18 +256,6 @@ def start_tmux_topology(config: SessionConfig, layout: str) -> None:
                 ],
                 desc=f"new-session:{role}",
             )
-            run_tmux_command(
-                args
-                + [
-                    "send-keys",
-                    "-t",
-                    f"{session_name}:{config.window_name}.0",
-                    "--",
-                    cmd,
-                    "C-m",
-                ],
-                desc=f"{role}-start",
-            )
 
     # Apply minimal UI settings at server level too (in case server already existed)
     apply_minimal_tmux_ui(args)
