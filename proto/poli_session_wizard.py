@@ -53,6 +53,7 @@ SESSION_STATE_FILE = CONFIG_DIR / "last_session.json"
 DEBUG_TMUX = os.environ.get("POLI_WIZARD_DEBUG", "1").lower() not in ("0", "false", "no")
 AUTO_ATTACH = os.environ.get("POLI_WIZARD_ATTACH", "1").lower() not in ("0", "false", "no")
 INSIDE_TMUX = bool(os.environ.get("TMUX"))
+PRIMER_DELAY = float(os.environ.get("POLI_PRIMER_DELAY", "3.0"))
 
 CUSTOM_LABEL = "Custom command"
 
@@ -267,7 +268,8 @@ def start_tmux_topology(config: SessionConfig, layout: str) -> None:
 
     # Apply minimal UI settings at server level too (in case server already existed)
     apply_minimal_tmux_ui(args)
-    time.sleep(2.0)
+    # Minimal settle for tmux server; full primer delay is applied in orchestrate()
+    time.sleep(0.5)
 
 
 def _sanitize_cli_line(line: str) -> str:
@@ -818,6 +820,9 @@ def orchestrate(
     config.project_dir.mkdir(parents=True, exist_ok=True)
     kill_existing_sessions(config)
     start_tmux_topology(config, layout)
+    if PRIMER_DELAY > 0:
+        print(f"Waiting {PRIMER_DELAY:.1f}s for TUIs to settle...")
+        time.sleep(PRIMER_DELAY)
     planner_lines = load_primer_lines("planner")
     executer_lines = load_primer_lines("executer")
     print("Injecting primers...")
@@ -853,6 +858,7 @@ def main() -> int:
     parser.add_argument("--no-attach", action="store_true", help="Do not auto-attach tmux")
     parser.add_argument("--debug-tmux", action="store_true", help="Force tmux command logging")
     parser.add_argument("--no-debug", action="store_true", help="Disable tmux command logging")
+    parser.add_argument("--primer-delay", type=float, help="Delay before primer injection (seconds)")
 
     args = parser.parse_args()
 
@@ -862,6 +868,9 @@ def main() -> int:
         DEBUG_TMUX = False
     if args.no_attach:
         AUTO_ATTACH = False
+    if args.primer_delay is not None and args.primer_delay >= 0:
+        global PRIMER_DELAY
+        PRIMER_DELAY = float(args.primer_delay)
 
     previous, prefs = load_previous_session()
 
