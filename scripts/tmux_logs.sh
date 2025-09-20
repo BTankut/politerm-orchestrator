@@ -19,12 +19,18 @@ if [[ "$cmd" != "on" && "$cmd" != "off" ]]; then
 fi
 
 if [[ "$cmd" == "on" ]]; then
-  tmux -L "$SOCKET" pipe-pane -o -t "$PLANNER_TARGET" "ts >> $LOG_DIR/planner_pane.log"
-  tmux -L "$SOCKET" pipe-pane -o -t "$EXECUTER_TARGET" "ts >> $LOG_DIR/executer_pane.log"
+  if command -v ts >/dev/null 2>&1; then
+    CMD_P="ts >> $LOG_DIR/planner_pane.log"
+    CMD_E="ts >> $LOG_DIR/executer_pane.log"
+  else
+    CMD_P=">> $LOG_DIR/planner_pane.log cat"
+    CMD_E=">> $LOG_DIR/executer_pane.log cat"
+  fi
+  tmux -L "$SOCKET" pipe-pane -o -t "$PLANNER_TARGET" "$CMD_P"
+  tmux -L "$SOCKET" pipe-pane -o -t "$EXECUTER_TARGET" "$CMD_E"
   echo "tmux pane logging enabled -> $LOG_DIR/{planner_pane.log,executer_pane.log}"
 else
   tmux -L "$SOCKET" pipe-pane -t "$PLANNER_TARGET"
   tmux -L "$SOCKET" pipe-pane -t "$EXECUTER_TARGET"
   echo "tmux pane logging disabled"
 fi
-

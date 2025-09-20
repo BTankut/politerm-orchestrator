@@ -823,14 +823,18 @@ def orchestrate(
                 planner_target = f"{config.planner_session}:{config.window_name}.0"
                 executer_target = f"{config.executer_session}:{config.window_name}.0"
             LOG_DIR.mkdir(exist_ok=True)
+            # choose logging command: prefer 'ts' if available, else plain cat
+            has_ts = shutil.which("ts") is not None
+            cmd_p = (f"ts >> {str(LOG_DIR / 'planner_pane.log')}" if has_ts else f">> {str(LOG_DIR / 'planner_pane.log')} cat")
+            cmd_e = (f"ts >> {str(LOG_DIR / 'executer_pane.log')}" if has_ts else f">> {str(LOG_DIR / 'executer_pane.log')} cat")
             run_tmux_command(
-                args + ["pipe-pane", "-o", "-t", planner_target, f"ts >> {str(LOG_DIR / 'planner_pane.log')}"],
+                args + ["pipe-pane", "-o", "-t", planner_target, cmd_p],
                 check=False,
                 capture=False,
                 desc="log:planner:on",
             )
             run_tmux_command(
-                args + ["pipe-pane", "-o", "-t", executer_target, f"ts >> {str(LOG_DIR / 'executer_pane.log')}"],
+                args + ["pipe-pane", "-o", "-t", executer_target, cmd_e],
                 check=False,
                 capture=False,
                 desc="log:executer:on",
