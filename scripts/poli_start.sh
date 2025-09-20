@@ -39,8 +39,34 @@ printf '>>> Launching PoliTerm wizard using %s\n' "$WIZARD_PYTHON"
 export POLI_PANE_LOG="${POLI_PANE_LOG:-}"
 export POLI_PANE_LOG_DURATION="${POLI_PANE_LOG_DURATION:-}"
 
-if ! "$WIZARD_PYTHON" "$WIZARD_PATH" "$@"; then
-  echo "Wizard exited with non-zero status. Aborting orchestrator startup." >&2
+# Optional timeout for wizard (seconds)
+START_TIMEOUT="${POLI_START_TIMEOUT:-90}"
+
+if [[ "$START_TIMEOUT" =~ ^[0-9]+$ && "$START_TIMEOUT" -gt 0 ]]; then
+  "$WIZARD_PYTHON" "$WIZARD_PATH" "$@" &
+  WIZ_PID=$!
+  SECS=0
+  INTERVAL=1
+  while kill -0 "$WIZ_PID" >/dev/null 2>&1; do
+    if [[ "$SECS" -ge "$START_TIMEOUT" ]]; then
+      echo "⚠️  Wizard timed out after ${START_TIMEOUT}s; sending SIGTERM..." >&2
+      kill "$WIZ_PID" >/dev/null 2>&1 || true
+      sleep 2
+      kill -9 "$WIZ_PID" >/dev/null 2>&1 || true
+      echo "Aborting orchestrator startup due to wizard timeout." >&2
+      exit 1
+    fi
+    sleep "$INTERVAL"; SECS=$((SECS+INTERVAL))
+  done
+  wait "$WIZ_PID"
+  WIZ_RC=$?
+else
+  "$WIZARD_PYTHON" "$WIZARD_PATH" "$@"
+  WIZ_RC=$?
+fi
+
+if [[ "$WIZ_RC" -ne 0 ]]; then
+  echo "Wizard exited with non-zero status ($WIZ_RC). Aborting orchestrator startup." >&2
   exit 1
 fi
 

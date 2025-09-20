@@ -898,25 +898,26 @@ def orchestrate(
                 return
             time.sleep(0.2)
 
-    try:
-        print("Checking PLANNER readiness...")
-        wait_ready(
-            f"{config.planner_session}:{config.window_name}.0" if layout != "split" else f"{config.session}.0",
-            patterns=["Welcome to Claude Code", "? for shortcuts", "cwd:"],
-            timeout=READY_TIMEOUT,
-        )
-    except Exception:
-        pass
+    if config.auto_inject:
+        try:
+            print("Checking PLANNER readiness...")
+            wait_ready(
+                f"{config.planner_session}:{config.window_name}.0" if layout != "split" else f"{config.session}.0",
+                patterns=["Welcome to Claude Code", "? for shortcuts", "cwd:"],
+                timeout=READY_TIMEOUT,
+            )
+        except Exception:
+            pass
 
-    try:
-        print("Checking EXECUTER readiness...")
-        wait_ready(
-            f"{config.executer_session}:{config.window_name}.0" if layout != "split" else f"{config.session}.1",
-            patterns=["OpenAI Codex", "directory:"],
-            timeout=READY_TIMEOUT,
-        )
-    except Exception:
-        pass
+        try:
+            print("Checking EXECUTER readiness...")
+            wait_ready(
+                f"{config.executer_session}:{config.window_name}.0" if layout != "split" else f"{config.session}.1",
+                patterns=["OpenAI Codex", "directory:"],
+                timeout=READY_TIMEOUT,
+            )
+        except Exception:
+            pass
     if config.auto_inject:
         planner_lines = load_primer_lines("planner")
         executer_lines = load_primer_lines("executer")
